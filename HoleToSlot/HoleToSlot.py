@@ -1,36 +1,10 @@
-
 """
-HoleToSlot v3.8
+HoleToSlot v4.1
 
-Root-cause fix for partial-slot extrude:
-
-  The addTangent(line1, proj_circle) constraint caused the projected hole
-  circle to intersect line1, fragmenting the slot profile into pieces some
-  of which had centroids OUTSIDE the sketch face boundary -> extrude error.
-
-  Fix:
-  1. Remove line-to-circle tangent.  The slot width is already fully
-     defined by addEqual(arc1,arc2) + the driven radial dimension.
-     The projected circle is construction-only and does NOT touch the
-     slot profile curves -> no fragmentation.
-
-  2. Extrude: use setTwoSidesExtent with ThroughAllExtentDefinition on
-     both sides instead of setAllExtent(Symmetric), which was unreliable
-     with ObjectCollection input.
-
-  3. Profile collection: pick by centroid inside oriented slot box as
-     before, but now there will be exactly ONE profile (the clean slot
-     interior) because nothing intersects the slot outline.
-
-Full constraint set (minimal, non-redundant, fully defines sketch):
-  4 x coincident   (arc/line endpoint closure)
-  4 x tangent      (arc1->line1, arc1->line2, arc2->line1, arc2->line2)
-  1 x equal        (arc1 == arc2, same radius)
-  2 x coincident   (con_line ends on arc centres)
-  1 x midpoint     (slot centre = projected hole centre)
-  1 x perpendicular (con_line perp to projected bend edge)
-  1 x driving distance dim (slot length on con_line)
-  1 x driven radial dim    (arc1 radius = hole radius, reference)
+- Replaced deprecated sk.project() with sk.project2() throughout.
+- Removed fallback manual centre_pt — raises clearly if projection fails.
+- Constraint fix: addCoincident(centre_pt, con_line) + addTangent(proj_circle, line1/line2)
+  instead of addMidPoint.
 """
 import adsk.core, adsk.fusion, math, traceback
 
@@ -67,7 +41,7 @@ def _inside_slot(px, py, cx, cy, su, sv, pu, pv, half_len, radius, tol=1e-4):
 # ---------------------------------------------------------------------------
 # Build
 # ---------------------------------------------------------------------------
-def build_slot(root, hole_face, bend_face, slot_length_cm, slot_length_expr):
+def build_slot(root, hole_face, bend_edge, slot_length_cm, slot_length_expr):
 
     # 1. Hole geometry
     surf = hole_face.geometry
@@ -77,80 +51,80 @@ def build_slot(root, hole_face, bend_face, slot_length_cm, slot_length_expr):
     hole_origin = surf.origin
     radius      = surf.radius
 
-    # 2. Slot elongation direction
-    bsurf = bend_face.geometry
-    if not isinstance(bsurf, adsk.core.Plane):
-        raise ValueError('Bend reference face is not planar.')
-    bend_normal = _norm(bsurf.normal)
-    bend_axis   = _norm(_cross(bend_normal, hole_axis))
-    slot_dir    = _norm(_cross(hole_axis, bend_axis))
+    # 2. Slot elongation direction — derived directly from the bend edge
+    edge_geom = bend_edge.geometry
+    if not isinstance(edge_geom, adsk.core.Line3D):
+        raise ValueError('Bend reference edge is not a straight line.')
+    bend_axis = _norm(edge_geom.asInfiniteLine().direction)
+    slot_dir  = _norm(_cross(hole_axis, bend_axis))
 
-    # 3. Adjacent flat face + circular opening edge
-    sketch_face = None
-    hole_edge   = None
+    # 3. Find the two flat faces adjacent to the hole (one per rim circle).
+    #    Closest to hole_origin → sketch face. Farthest → extrude target.
+    flat_faces = []
     for edge in hole_face.edges:
+        if not isinstance(edge.geometry, adsk.core.Circle3D):
+            continue
         for adj in edge.faces:
-            if adj.entityToken == hole_face.entityToken: continue
-            if not isinstance(adj.geometry, adsk.core.Plane): continue
+            if adj.entityToken == hole_face.entityToken:
+                continue
+            if not isinstance(adj.geometry, adsk.core.Plane):
+                continue
             if abs(_dot(adj.geometry.normal, hole_axis)) > 0.85:
-                sketch_face = adj
-                if isinstance(edge.geometry, adsk.core.Circle3D):
-                    hole_edge = edge
-                break
-        if sketch_face: break
-    if sketch_face is None:
+                flat_faces.append((adj, edge))
+
+    if len(flat_faces) == 0:
         raise RuntimeError('No flat face adjacent to the hole.')
 
-    # 4. Closest straight edge on bend face
-    best_bend_edge = None
-    best_bend_dist = math.inf
-    for bedge in bend_face.edges:
-        if not isinstance(bedge.geometry, adsk.core.Line3D): continue
-        d = _dist3(bedge.pointOnEdge, hole_origin)
-        if d < best_bend_dist:
-            best_bend_dist = d
-            best_bend_edge = bedge
+    def _face_dist(fe):
+        c = fe[0].geometry.origin
+        return _dist3(c, hole_origin)
 
-    # 5. Create sketch
+    flat_faces.sort(key=_face_dist)
+    sketch_face   = flat_faces[0][0]
+    hole_edge     = flat_faces[0][1]
+    opposite_face = flat_faces[-1][0] if len(flat_faces) >= 2 else None
+
+    # 4. Create sketch — projections must happen before deferring compute
     sk = root.sketches.add(sketch_face)
 
-    # Defer sketch recomputes until all geometry/constraints are added
+    # 5. Project hole rim circle — linked so it updates with the hole
+    projected = sk.project2([hole_edge], True)
+    proj_circle = None
+    for item in projected:
+        c = adsk.fusion.SketchCircle.cast(item)
+        if c is not None:
+            c.isConstruction = True
+            proj_circle = c
+            break
+
+    if proj_circle is None:
+        raise RuntimeError(
+            f'project2() returned {len(projected)} item(s), none were SketchCircle: '
+            + ', '.join(type(item).__name__ for item in projected))
+
+    centre_pt = proj_circle.centerSketchPoint
+
+    # 6. Project the selected bend edge — linked
+    bend_proj_line = None
+    try:
+        projected_bend = sk.project2([bend_edge], True)
+        for item in projected_bend:
+            sl = adsk.fusion.SketchLine.cast(item)
+            if sl is not None:
+                sl.isConstruction = True
+                bend_proj_line = sl
+                break
+    except Exception:
+        pass
+
+    # Now defer recomputes while adding curves and constraints
     sk.isComputeDeferred = True
 
-    # 6. Project hole circle -> construction only (does NOT touch slot curves)
-    proj_circle = None
-    centre_pt   = None
-    if hole_edge is not None:
-        for item in sk.project(hole_edge):
-            c = adsk.fusion.SketchCircle.cast(item)
-            if c is not None:
-                c.isConstruction = True
-                proj_circle = c
-                centre_pt   = c.centerSketchPoint
-                break
-    if centre_pt is None:
-        sxd_, syd_, sod_ = sk.xDirection, sk.yDirection, sk.origin
-        def _w2s(pt):
-            d = adsk.core.Vector3D.create(pt.x-sod_.x, pt.y-sod_.y, pt.z-sod_.z)
-            return adsk.core.Point3D.create(_dot(d,sxd_), _dot(d,syd_), 0)
-        centre_pt = sk.sketchPoints.add(_w2s(hole_origin))
-
-    # 7. Project single closest bend edge -> construction only
-    bend_proj_line = None
-    if best_bend_edge is not None:
-        try:
-            for item in sk.project(best_bend_edge):
-                sl = adsk.fusion.SketchLine.cast(item)
-                if sl is not None:
-                    sl.isConstruction = True
-                    bend_proj_line = sl
-                    break
-        except Exception:
-            pass
-
-    # 8. Slot 2-D layout
-    sxd = sk.xDirection;  syd = sk.yDirection
-    su = _dot(slot_dir, sxd);  sv = _dot(slot_dir, syd)
+    # 7. Slot 2-D layout
+    sxd = sk.xDirection
+    syd = sk.yDirection
+    su  = _dot(slot_dir, sxd)
+    sv  = _dot(slot_dir, syd)
     sl_n = math.sqrt(su**2 + sv**2)
     if sl_n < 1e-10:
         raise ValueError('Slot direction is zero in sketch plane.')
@@ -170,48 +144,60 @@ def build_slot(root, hole_face, bend_face, slot_length_cm, slot_length_expr):
     c1 = adsk.core.Point3D.create(c1x, c1y, 0)
     c2 = adsk.core.Point3D.create(c2x, c2y, 0)
 
-    # 9. Draw slot profile curves
-    curves = sk.sketchCurves
-    line1 = curves.sketchLines.addByTwoPoints(p1, p4)
-    line2 = curves.sketchLines.addByTwoPoints(p2, p3)
-    arc1  = curves.sketchArcs.addByCenterStartSweep(c1, p2, math.pi)
-    arc2  = curves.sketchArcs.addByCenterStartSweep(c2, p4, math.pi)
+    # 8. Draw slot profile curves
+    curves   = sk.sketchCurves
+    line1    = curves.sketchLines.addByTwoPoints(p1, p4)
+    line2    = curves.sketchLines.addByTwoPoints(p2, p3)
+    arc1     = curves.sketchArcs.addByCenterStartSweep(c1, p2, math.pi)
+    arc2     = curves.sketchArcs.addByCenterStartSweep(c2, p4, math.pi)
     con_line = curves.sketchLines.addByTwoPoints(
         arc1.centerSketchPoint.geometry,
         arc2.centerSketchPoint.geometry)
     con_line.isConstruction = True
 
-    # 10. Constraints  --  minimal, non-redundant, NO line-circle tangent
+        # 9. Constraints
     con = sk.geometricConstraints
+    constraint_errors = []
+
+    def _try(label, fn):
+        try:
+            fn()
+        except Exception as e:
+            constraint_errors.append(f'{label}: {e}')
 
     # Profile closure
-    con.addCoincident(line1.startSketchPoint, arc1.startSketchPoint)
-    con.addCoincident(line2.startSketchPoint, arc1.endSketchPoint)
-    con.addCoincident(line1.endSketchPoint,   arc2.endSketchPoint)
-    con.addCoincident(line2.endSketchPoint,   arc2.startSketchPoint)
+    _try('coincident line1.start = arc1.start', lambda: con.addCoincident(line1.startSketchPoint, arc1.startSketchPoint))
+    _try('coincident line2.start = arc1.end',   lambda: con.addCoincident(line2.startSketchPoint, arc1.endSketchPoint))
+    _try('coincident line1.end = arc2.end',     lambda: con.addCoincident(line1.endSketchPoint,   arc2.endSketchPoint))
+    _try('coincident line2.end = arc2.start',   lambda: con.addCoincident(line2.endSketchPoint,   arc2.startSketchPoint))
 
-    # Arc-to-line tangents (fully defines slot shape; implies parallel+equal lines)
-    con.addTangent(arc1, line1)
-    con.addTangent(arc1, line2)
-    con.addTangent(arc2, line1)
-    con.addTangent(arc2, line2)
+    # Arc-to-line tangents
+    _try('tangent arc1 line1', lambda: con.addTangent(arc1, line1))
+    _try('tangent arc1 line2', lambda: con.addTangent(arc1, line2))
+    _try('tangent arc2 line1', lambda: con.addTangent(arc2, line1))
+    _try('tangent arc2 line2', lambda: con.addTangent(arc2, line2))
 
     # Equal arcs
-    con.addEqual(arc1, arc2)
+    _try('equal arc1 arc2', lambda: con.addEqual(arc1, arc2))
 
-    # Construction centre line
-    con.addCoincident(con_line.startSketchPoint, arc1.centerSketchPoint)
-    con.addCoincident(con_line.endSketchPoint,   arc2.centerSketchPoint)
+    # Construction centre line endpoints on arc centres
+    _try('coincident con_line.start = arc1.center', lambda: con.addCoincident(con_line.startSketchPoint, arc1.centerSketchPoint))
+    _try('coincident con_line.end = arc2.center',   lambda: con.addCoincident(con_line.endSketchPoint,   arc2.centerSketchPoint))
 
-    # Slot centre = hole centre
-    con.addMidPoint(centre_pt, con_line)
+    # Hole centre on construction centre line
+    _try('midpoint centre_pt on con_line', lambda: con.addMidPoint(centre_pt, con_line))
 
-    # Slot axis perpendicular to bend edge
+    # Slot lines tangent to projected hole circle
+    _try('tangent proj_circle line1', lambda: con.addTangent(proj_circle, line1))
+
+    # Perpendicular to bend edge
     if bend_proj_line is not None:
-        try: con.addPerpendicular(con_line, bend_proj_line)
-        except Exception: pass
+        _try('perpendicular con_line bend', lambda: con.addPerpendicular(con_line, bend_proj_line))
 
-    # 11. Dimensions
+    if constraint_errors:
+        raise RuntimeError('Constraint errors:\n' + '\n'.join(constraint_errors))
+
+    # 10. Dimensions
     dims     = sk.sketchDimensions
     text_len = adsk.core.Point3D.create(
         (c1x+c2x)/2 + pu*radius*2.5,
@@ -225,7 +211,6 @@ def build_slot(root, hole_face, bend_face, slot_length_cm, slot_length_expr):
     except Exception:
         pass
 
-    # Driven radial dim (reference)
     try:
         dims.addRadialDimension(
             arc1,
@@ -234,14 +219,20 @@ def build_slot(root, hole_face, bend_face, slot_length_cm, slot_length_expr):
     except Exception:
         pass
 
-    # Re-enable sketch compute now that all curves/constraints/dims are added
     sk.isComputeDeferred = False
 
-    # 12. Select profiles inside the slot bounding box
+    # 11. Select profiles inside the slot bounding box.
+    #     Reject profiles larger than the theoretical slot area.
+    slot_area_max = (2.0 * radius * slot_length_cm
+                     + math.pi * radius ** 2) * 1.10
+
     slot_profiles = adsk.core.ObjectCollection.create()
     for prof in sk.profiles:
         try:
-            cen = prof.areaProperties().centroid
+            props = prof.areaProperties()
+            if props.area > slot_area_max:
+                continue
+            cen = props.centroid
             if _inside_slot(cen.x, cen.y, cx, cy,
                             su, sv, pu, pv, half_len, radius):
                 slot_profiles.add(prof)
@@ -252,16 +243,21 @@ def build_slot(root, hole_face, bend_face, slot_length_cm, slot_length_expr):
         raise RuntimeError(
             f'No profiles found inside slot boundary.\n'
             f'Sketch has {sk.profiles.count} profile(s).\n'
-            'Check hole and bend face selection.')
+            'Check hole and bend edge selection.')
 
-    # 13. Extrude cut: two-sided through-all (explicit, robust with ObjectCollection)
+    # 12. Extrude cut — To Entity: opposite flat face of the hole.
+    if opposite_face is None:
+        raise RuntimeError(
+            'Could not find the opposite flat face of the hole.\n'
+            'Ensure the hole passes fully through the body.')
+
     extrudes = root.features.extrudeFeatures
     ext_in   = extrudes.createInput(
         slot_profiles, adsk.fusion.FeatureOperations.CutFeatureOperation)
-
-    through_all_1 = adsk.fusion.ThroughAllExtentDefinition.create()
-    through_all_2 = adsk.fusion.ThroughAllExtentDefinition.create()
-    ext_in.setTwoSidesExtent(through_all_1, through_all_2)
+    to_entity = adsk.fusion.ToEntityExtentDefinition.create(opposite_face, False)
+    ext_in.setOneSideExtent(
+        to_entity,
+        adsk.fusion.ExtentDirections.PositiveExtentDirection)
 
     return sk, extrudes.add(ext_in)
 
@@ -280,11 +276,11 @@ class CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
                 'Select the cylindrical WALL of one or more holes')
             hs.addSelectionFilter('CylindricalFaces')
             hs.setSelectionLimits(1, 0)
-            bs = inps.addSelectionInput(
-                'bendFace', 'Bend Reference Face',
-                'Select a flat face aligned with the bend direction')
-            bs.addSelectionFilter('PlanarFaces')
-            bs.setSelectionLimits(1, 1)
+            be = inps.addSelectionInput(
+                'bendEdge', 'Bend Reference Edge',
+                'Select a straight edge aligned with the bend axis')
+            be.addSelectionFilter('LinearEdges')
+            be.setSelectionLimits(1, 1)
             inps.addValueInput(
                 'slotLength', 'Slot Length (centre to centre)', 'mm',
                 adsk.core.ValueInput.createByString('10 mm'))
@@ -300,7 +296,7 @@ class ValidateHandler(adsk.core.ValidateInputsEventHandler):
     def notify(self, args):
         inps = args.inputs
         h = inps.itemById('holeFace')
-        b = inps.itemById('bendFace')
+        b = inps.itemById('bendEdge')
         l = inps.itemById('slotLength')
         args.areInputsValid = (
             h and h.selectionCount >= 1 and
@@ -313,7 +309,7 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
         try:
             inps          = args.command.commandInputs
             hole_sel      = inps.itemById('holeFace')
-            bend_face     = inps.itemById('bendFace').selection(0).entity
+            bend_edge     = inps.itemById('bendEdge').selection(0).entity
             len_input     = inps.itemById('slotLength')
             slot_len_cm   = len_input.value
             slot_len_expr = len_input.expression
@@ -324,7 +320,7 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
             for i in range(hole_sel.selectionCount):
                 hole_face = hole_sel.selection(i).entity
                 try:
-                    build_slot(root, hole_face, bend_face,
+                    build_slot(root, hole_face, bend_edge,
                                slot_len_cm, slot_len_expr)
                 except Exception as e:
                     errors.append(f'Hole {i+1}: {e}')
@@ -353,7 +349,7 @@ def run(context):
             p = _ui.allToolbarPanels.itemById(pid)
             if p: p.controls.addCommand(cmd_def)
         _ui.messageBox(
-            f"\'{CMD_NAME}\' loaded (v3.8).\n\n"
+            f"'{CMD_NAME}' loaded (v4.1).\n\n"
             'Solid > Modify > Hole to Slot\n\n'
             'Slot Length: 10 mm  /  SlotLen  /  SlotLen + 2 mm')
     except Exception:
