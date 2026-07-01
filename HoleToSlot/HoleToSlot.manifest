@@ -1,0 +1,11 @@
+{
+    "autodeskProduct": "Fusion",
+    "type": "addin",
+    "id": "com.autodesk.fusion.HoleToSlot",
+    "author": "",
+    "description": { "": "Slot cut perpendicular to bend axis - fully parametric" },
+    "version": "3.8.0",
+    "runOnStartup": false,
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}

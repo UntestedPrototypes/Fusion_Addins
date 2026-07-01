@@ -2,6 +2,26 @@
 """
 HoleToSlot v3.8
 
+Root-cause fix for partial-slot extrude:
+
+  The addTangent(line1, proj_circle) constraint caused the projected hole
+  circle to intersect line1, fragmenting the slot profile into pieces some
+  of which had centroids OUTSIDE the sketch face boundary -> extrude error.
+
+  Fix:
+  1. Remove line-to-circle tangent.  The slot width is already fully
+     defined by addEqual(arc1,arc2) + the driven radial dimension.
+     The projected circle is construction-only and does NOT touch the
+     slot profile curves -> no fragmentation.
+
+  2. Extrude: use setTwoSidesExtent with ThroughAllExtentDefinition on
+     both sides instead of setAllExtent(Symmetric), which was unreliable
+     with ObjectCollection input.
+
+  3. Profile collection: pick by centroid inside oriented slot box as
+     before, but now there will be exactly ONE profile (the clean slot
+     interior) because nothing intersects the slot outline.
+
 Full constraint set (minimal, non-redundant, fully defines sketch):
   4 x coincident   (arc/line endpoint closure)
   4 x tangent      (arc1->line1, arc1->line2, arc2->line1, arc2->line2)
@@ -93,6 +113,9 @@ def build_slot(root, hole_face, bend_face, slot_length_cm, slot_length_expr):
 
     # 5. Create sketch
     sk = root.sketches.add(sketch_face)
+
+    # Defer sketch recomputes until all geometry/constraints are added
+    sk.isComputeDeferred = True
 
     # 6. Project hole circle -> construction only (does NOT touch slot curves)
     proj_circle = None
@@ -210,6 +233,9 @@ def build_slot(root, hole_face, bend_face, slot_length_cm, slot_length_expr):
             False)
     except Exception:
         pass
+
+    # Re-enable sketch compute now that all curves/constraints/dims are added
+    sk.isComputeDeferred = False
 
     # 12. Select profiles inside the slot bounding box
     slot_profiles = adsk.core.ObjectCollection.create()
