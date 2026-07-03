@@ -45,7 +45,7 @@ def run(context):
                 panel.controls.addCommand(_cmd_def)
         else:
             ui.messageBox("ExportBodies: Utility panel not found.")
-        ui.messageBox("ExportBodies loaded.\nFind it in the Utility panel.")
+        #ui.messageBox("ExportBodies loaded.\nFind it in the Utility panel.")
     except Exception:
         if ui:
             ui.messageBox("ExportBodies run() error:\n" + traceback.format_exc())
