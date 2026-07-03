@@ -1,0 +1,13 @@
+{
+  "autodeskProduct": "Fusion360",
+  "type": "addin",
+  "id": "FlatPatternExporter_addin",
+  "author": "",
+  "description": {
+    "": "Exports flat patterns for all sheet-metal components."
+  },
+  "version": "1.0.2",
+  "runOnStartup": false,
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}

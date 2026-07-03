@@ -86,6 +86,7 @@ def build_slot(root, hole_face, bend_edge, slot_length_cm, slot_length_expr):
 
     # 4. Create sketch — projections must happen before deferring compute
     sk = root.sketches.add(sketch_face)
+    sk.name = 'Slot_'
 
     # 5. Project hole rim circle — linked so it updates with the hole
     projected = sk.project2([hole_edge], True)
@@ -348,10 +349,6 @@ def run(context):
         for pid in ['SolidModifyPanel', 'SheetMetalModifyPanel']:
             p = _ui.allToolbarPanels.itemById(pid)
             if p: p.controls.addCommand(cmd_def)
-        _ui.messageBox(
-            f"'{CMD_NAME}' loaded (v4.1).\n\n"
-            'Solid > Modify > Hole to Slot\n\n'
-            'Slot Length: 10 mm  /  SlotLen  /  SlotLen + 2 mm')
     except Exception:
         if _ui: _ui.messageBox('run() failed:\n' + traceback.format_exc())
 

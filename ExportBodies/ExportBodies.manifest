@@ -1,0 +1,9 @@
+{
+  "autodeskProduct": "Fusion",
+  "type": "addin",
+  "id": "ExportBodiesAddin",
+  "author": "Autodesk Assistant",
+  "description": { "": "Exports bodies from selected components to a chosen format" },
+  "version": "7.0.0",
+  "runOnStartup": false
+}
