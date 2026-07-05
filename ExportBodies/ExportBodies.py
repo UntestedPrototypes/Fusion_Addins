@@ -31,8 +31,8 @@ def run(context):
             old.deleteMe()
         _cmd_def = ui.commandDefinitions.addButtonDefinition(
             "ExportBodiesCmd",
-            "Export Selected Bodies",
-            "Export bodies from selected components to a chosen format",
+            "Batch Bodies Exporter",
+            "Batch export bodies from selected components to a chosen format",
             ""
         )
         h = _CreatedHandler()
@@ -45,7 +45,6 @@ def run(context):
                 panel.controls.addCommand(_cmd_def)
         else:
             ui.messageBox("ExportBodies: Utility panel not found.")
-        #ui.messageBox("ExportBodies loaded.\nFind it in the Utility panel.")
     except Exception:
         if ui:
             ui.messageBox("ExportBodies run() error:\n" + traceback.format_exc())
@@ -82,9 +81,9 @@ class _CreatedHandler(adsk.core.CommandCreatedEventHandler):
             sel_input.addSelectionFilter("Occurrences")
             sel_input.setSelectionLimits(1, 0)
 
-            inputs.addBoolValueInput("chk_solid",      "Solid bodies",       True, "", True)
-            inputs.addBoolValueInput("chk_surface",    "Surface bodies",     True, "", False)
-            inputs.addBoolValueInput("chk_sheetmetal", "Sheet metal bodies",  True, "", False)
+            inputs.addBoolValueInput("chk_solid",      "Solid bodies",      True, "", True)
+            inputs.addBoolValueInput("chk_surface",    "Surface bodies",    True, "", False)
+            inputs.addBoolValueInput("chk_sheetmetal", "Sheet metal bodies", True, "", False)
 
             drop = inputs.addDropDownCommandInput(
                 "format", "Export Format",
@@ -94,15 +93,14 @@ class _CreatedHandler(adsk.core.CommandCreatedEventHandler):
                 drop.listItems.add(label, label == "STEP (.step)")
 
             inputs.addBoolValueInput(
-                "chk_compname", "Include component name in filename", True, "", True
+                "chk_compname", "Include component name in filename", True, "", False
+            )
+            inputs.addBoolValueInput(
+                "chk_recurse", "Include sub-component bodies", True, "", False
             )
 
-            inputs.addTextBoxCommandInput(
-                "info", "",
-                "<b>Note:</b> After clicking OK, a folder picker will open.<br>"
-                "Each body is fully isolated (bodies + sub-components hidden) before export.",
-                3, True
-            )
+            inputs.addStringValueInput("prefix", "Filename Prefix", "")
+            inputs.addStringValueInput("suffix", "Filename Suffix", "")
 
             h_exec = _ExecuteHandler()
             cmd.execute.add(h_exec)
@@ -135,46 +133,103 @@ class _ValidateHandler(adsk.core.ValidateInputsEventHandler):
 # ---------------------------------------------------------------------------
 # Visibility helpers
 # ---------------------------------------------------------------------------
-def _save_and_isolate(comp, target_body_idx):
+def _hide_all_occs_recursive(comp, path, snapshot_occs):
+    """Recursively hide all occurrences at every depth.
+    Uses a tuple path (comp.name, index, ...) as a stable key instead of
+    entityToken, which is only valid for root-level proxies.
     """
-    Save visibility state of all bodies and occurrences in comp,
-    then isolate: show only the target body, hide everything else.
-    Returns a snapshot dict that _restore() understands.
-    """
-    snapshot = {"bodies": {}, "occs": {}}
+    occs = comp.occurrences
+    for i in range(occs.count):
+        occ = occs.item(i)
+        key = path + (i,)
+        snapshot_occs[key] = occ.isLightBulbOn
+        occ.isLightBulbOn = False
+        if occ.component:
+            _hide_all_occs_recursive(occ.component, key, snapshot_occs)
 
-    # Bodies
+
+def _save_and_isolate(comp, target_body_idx):
+    snapshot = {"bodies": {}, "occs": {}}
     bodies = comp.bRepBodies
     for i in range(bodies.count):
         body = bodies.item(i)
         snapshot["bodies"][i] = body.isLightBulbOn
         body.isLightBulbOn = (i == target_body_idx)
-
-    # Occurrences (sub-components)
-    occs = comp.occurrences
-    for i in range(occs.count):
-        occ = occs.item(i)
-        snapshot["occs"][i] = occ.isLightBulbOn
-        occ.isLightBulbOn = False
-
+    _hide_all_occs_recursive(comp, (), snapshot["occs"])
     return snapshot
 
 
 def _restore(comp, snapshot):
-    """Restore visibility from a snapshot produced by _save_and_isolate."""
     bodies = comp.bRepBodies
     for i, state in snapshot["bodies"].items():
         try:
             bodies.item(i).isLightBulbOn = state
         except Exception:
             pass
+    # Restore all occurrences at every depth using the same path-tuple keys
+    def _restore_occs_recursive(c, path):
+        occs = c.occurrences
+        for i in range(occs.count):
+            occ = occs.item(i)
+            key = path + (i,)
+            if key in snapshot["occs"]:
+                try:
+                    occ.isLightBulbOn = snapshot["occs"][key]
+                except Exception:
+                    pass
+            if occ.component:
+                _restore_occs_recursive(occ.component, key)
+    _restore_occs_recursive(comp, ())
 
-    occs = comp.occurrences
-    for i, state in snapshot["occs"].items():
-        try:
-            occs.item(i).isLightBulbOn = state
-        except Exception:
-            pass
+
+# ---------------------------------------------------------------------------
+# Collect (comp, body_index) pairs - recurse only when recurse=True
+# ---------------------------------------------------------------------------
+def _collect_bodies(comp, want_solid, want_surf, want_sm, inc_comp,
+                    prefix, suffix, folder, ext, plan, skipped,
+                    seen_comp_ids, recurse, is_top_level):
+    if comp.id in seen_comp_ids:
+        return
+    seen_comp_ids.add(comp.id)
+
+    comp_safe = _safe_name(comp.name)
+    bodies    = comp.bRepBodies
+
+    for i in range(bodies.count):
+        body = bodies.item(i)
+        if body.isSheetMetal:
+            keep = want_sm
+            kind = "sheet metal"
+        elif body.isSolid:
+            keep = want_solid
+            kind = "solid"
+        else:
+            keep = want_surf
+            kind = "surface"
+
+        if not keep:
+            skipped.append("{}/{} ({})".format(comp.name, body.name, kind))
+            continue
+
+        body_safe = _safe_name(body.name)
+        base_name = "{}_{}".format(comp_safe, body_safe) if inc_comp else body_safe
+
+        if prefix:
+            base_name = prefix + "_" + base_name
+        if suffix:
+            base_name = base_name + "_" + suffix
+
+        filepath = os.path.join(folder, base_name + ext)
+        plan.append((comp, i, body.name, filepath))
+
+    if recurse:
+        for j in range(comp.occurrences.count):
+            sub_occ  = comp.occurrences.item(j)
+            sub_comp = sub_occ.component
+            if sub_comp:
+                _collect_bodies(sub_comp, want_solid, want_surf, want_sm, inc_comp,
+                                prefix, suffix, folder, ext, plan, skipped,
+                                seen_comp_ids, recurse, is_top_level=False)
 
 
 # ---------------------------------------------------------------------------
@@ -190,9 +245,14 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
             want_surf  = inputs.itemById("chk_surface").value
             want_sm    = inputs.itemById("chk_sheetmetal").value
             inc_comp   = inputs.itemById("chk_compname").value
+            recurse    = inputs.itemById("chk_recurse").value
             sel_input  = inputs.itemById("components")
 
-            # Folder picker
+            raw_prefix = _safe_name(inputs.itemById("prefix").value.strip())
+            raw_suffix = _safe_name(inputs.itemById("suffix").value.strip())
+            prefix = raw_prefix.strip("_")
+            suffix = raw_suffix.strip("_")
+
             dlg = ui.createFolderDialog()
             dlg.title            = "Select Output Folder"
             dlg.initialDirectory = os.path.expanduser("~")
@@ -206,48 +266,28 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
             design     = app.activeProduct
             export_mgr = design.exportManager
 
-            # Collect unique components
-            seen_ids   = set()
-            components = []
+            seen_sel_ids   = set()
+            top_components = []
             for i in range(sel_input.selectionCount):
                 entity = sel_input.selection(i).entity
                 occ    = adsk.fusion.Occurrence.cast(entity)
                 comp   = occ.component if occ else adsk.fusion.Component.cast(entity)
-                if comp and comp.id not in seen_ids:
-                    seen_ids.add(comp.id)
-                    components.append(comp)
+                if comp and comp.id not in seen_sel_ids:
+                    seen_sel_ids.add(comp.id)
+                    top_components.append(comp)
 
-            if not components:
+            if not top_components:
                 ui.messageBox("No valid components found in selection.")
                 return
 
-            # Build export plan
-            plan    = []
-            skipped = []
+            plan          = []
+            skipped       = []
+            seen_comp_ids = set()
 
-            for comp in components:
-                comp_safe = _safe_name(comp.name)
-                bodies    = comp.bRepBodies
-                for i in range(bodies.count):
-                    body = bodies.item(i)
-                    if body.isSheetMetal:
-                        keep = want_sm
-                        kind = "sheet metal"
-                    elif body.isSolid:
-                        keep = want_solid
-                        kind = "solid"
-                    else:
-                        keep = want_surf
-                        kind = "surface"
-
-                    if not keep:
-                        skipped.append("{}/{} ({})".format(comp.name, body.name, kind))
-                        continue
-
-                    body_safe = _safe_name(body.name)
-                    base_name = "{}_{}".format(comp_safe, body_safe) if inc_comp else body_safe
-                    filepath  = os.path.join(folder, base_name + ext)
-                    plan.append((comp, i, body.name, filepath))
+            for comp in top_components:
+                _collect_bodies(comp, want_solid, want_surf, want_sm, inc_comp,
+                                prefix, suffix, folder, ext, plan, skipped,
+                                seen_comp_ids, recurse, is_top_level=True)
 
             if not plan:
                 msg_parts = ["No bodies matched the selected filters."]
@@ -256,7 +296,6 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
                 ui.messageBox("\n\n".join(msg_parts))
                 return
 
-            # Single overwrite check
             conflicts = [e for e in plan if os.path.exists(e[3])]
             overwrite = True
             if conflicts:
@@ -270,61 +309,50 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
                 )
                 overwrite = (answer == adsk.core.DialogResults.DialogYes)
 
-            # Execute plan grouped by component
             exported, errors = [], []
-            from itertools import groupby
-            plan_sorted = sorted(plan, key=lambda e: e[0].id)
 
-            for _, group in groupby(plan_sorted, key=lambda e: e[0].id):
-                group_list = list(group)
-                comp       = group_list[0][0]
-
-                for _, body_idx, body_name, filepath in group_list:
-                    # Overwrite check
-                    if os.path.exists(filepath):
-                        if not overwrite:
-                            skipped.append("{} (not overwritten)".format(
-                                os.path.basename(filepath)))
-                            continue
-                        try:
-                            os.remove(filepath)
-                        except Exception as exc:
-                            errors.append("{}: could not remove: {}".format(
-                                os.path.basename(filepath), exc))
-                            continue
-
-                    # Isolate: hide all sibling bodies + all sub-component occurrences
-                    snapshot = _save_and_isolate(comp, body_idx)
+            for comp, body_idx, body_name, filepath in plan:
+                if os.path.exists(filepath):
+                    if not overwrite:
+                        skipped.append("{} (not overwritten)".format(
+                            os.path.basename(filepath)))
+                        continue
                     try:
-                        body = comp.bRepBodies.item(body_idx)
-                        if fmt == "step":
-                            opts = export_mgr.createSTEPExportOptions(filepath, comp)
-                        elif fmt == "3mf":
-                            opts = export_mgr.createC3MFExportOptions(body, filepath)
-                        elif fmt == "stl":
-                            opts = export_mgr.createSTLExportOptions(body, filepath)
-                        elif fmt == "obj":
-                            opts = export_mgr.createOBJExportOptions(body, filepath)
-                        elif fmt == "iges":
-                            opts = export_mgr.createIGESExportOptions(filepath, comp)
-                        elif fmt == "sat":
-                            opts = export_mgr.createSATExportOptions(filepath, comp)
-                        else:
-                            errors.append("{}: unknown format".format(body_name))
-                            _restore(comp, snapshot)
-                            continue
-
-                        if export_mgr.execute(opts):
-                            exported.append(os.path.basename(filepath))
-                        else:
-                            errors.append("{}: execute() returned False".format(body_name))
+                        os.remove(filepath)
                     except Exception as exc:
-                        errors.append("{}: {}".format(body_name, exc))
-                    finally:
-                        # Always restore visibility after each body
-                        _restore(comp, snapshot)
+                        errors.append("{}: could not remove: {}".format(
+                            os.path.basename(filepath), exc))
+                        continue
 
-            # Summary
+                snapshot = _save_and_isolate(comp, body_idx)
+                try:
+                    body = comp.bRepBodies.item(body_idx)
+                    if fmt == "step":
+                        opts = export_mgr.createSTEPExportOptions(filepath, comp)
+                    elif fmt == "3mf":
+                        opts = export_mgr.createC3MFExportOptions(body, filepath)
+                    elif fmt == "stl":
+                        opts = export_mgr.createSTLExportOptions(body, filepath)
+                    elif fmt == "obj":
+                        opts = export_mgr.createOBJExportOptions(body, filepath)
+                    elif fmt == "iges":
+                        opts = export_mgr.createIGESExportOptions(filepath, comp)
+                    elif fmt == "sat":
+                        opts = export_mgr.createSATExportOptions(filepath, comp)
+                    else:
+                        errors.append("{}: unknown format".format(body_name))
+                        _restore(comp, snapshot)
+                        continue
+
+                    if export_mgr.execute(opts):
+                        exported.append(os.path.basename(filepath))
+                    else:
+                        errors.append("{}: execute() returned False".format(body_name))
+                except Exception as exc:
+                    errors.append("{}: {}".format(body_name, exc))
+                finally:
+                    _restore(comp, snapshot)
+
             parts = []
             if exported:
                 parts.append("Exported {} file(s) to:\n{}\n\n{}".format(
@@ -342,4 +370,5 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
 
 
 def _safe_name(name):
-    return "".join("_" if ch in r'\/:|*?"<>' else ch for ch in name).strip()
+    bad = set('/ \\:|*?"<>'.replace(' ', ''))
+    return ''.join('_' if ch in bad else ch for ch in name).strip()
