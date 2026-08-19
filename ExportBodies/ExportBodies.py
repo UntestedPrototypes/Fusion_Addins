@@ -248,10 +248,8 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
             recurse    = inputs.itemById("chk_recurse").value
             sel_input  = inputs.itemById("components")
 
-            raw_prefix = _safe_name(inputs.itemById("prefix").value.strip())
-            raw_suffix = _safe_name(inputs.itemById("suffix").value.strip())
-            prefix = raw_prefix.strip("_")
-            suffix = raw_suffix.strip("_")
+            prefix = _safe_name(inputs.itemById("prefix").value.strip())
+            suffix = _safe_name(inputs.itemById("suffix").value.strip())
 
             dlg = ui.createFolderDialog()
             dlg.title            = "Select Output Folder"
