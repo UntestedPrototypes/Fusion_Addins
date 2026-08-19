@@ -148,11 +148,3 @@ the Utilities panel is workspace-dependent.
 | Flat pattern cannot be created automatically | Open the component in the **Sheet Metal** workspace, use **Create Flat Pattern** manually, then run the export again |
 
 ---
-
-## Version History
-
-| Add-in | Version | Notes |
-|---|---|---|
-| Export Flat Patterns | 1.0.2 | Added Filename Prefix and Suffix inputs |
-| Batch Bodies Exporter | 7.0.0 | Fixed prefix/suffix being silently dropped for certain inputs |
-
