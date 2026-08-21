@@ -29,7 +29,7 @@ def _pretty_xml(root: ET.Element) -> str:
     # Remove extra blank lines
     return '\n'.join([line for line in pretty_xml.split('\n') if line.strip()])
 
-def _build_link_element(link: LinkData, include_mesh: bool) -> ET.Element:
+def _build_link_element(link: LinkData, include_mesh: bool, use_mesh_collision: bool) -> ET.Element:
     """Build URDF link element."""
     link_el = ET.Element('link', name=link.name)
 
@@ -51,10 +51,18 @@ def _build_link_element(link: LinkData, include_mesh: bool) -> ET.Element:
         ET.SubElement(mat, 'color', rgba=_fmt_xyz(link.visual_color[:3]) + f" {_fmt(link.visual_color[3])}")
 
     # Collision
-    collision = ET.SubElement(link_el, 'collision')
-    ET.SubElement(collision, 'origin', xyz=_fmt_xyz(link.center_of_mass), rpy="0 0 0")
-    geom_c = ET.SubElement(collision, 'geometry')
-    ET.SubElement(geom_c, 'box', size=_fmt_xyz(link.bounding_box))
+    if use_mesh_collision:
+        col_mesh = link.col_stl_filename if hasattr(link, 'col_stl_filename') and link.col_stl_filename else link.stl_filename
+        if include_mesh and col_mesh:
+            collision = ET.SubElement(link_el, 'collision')
+            ET.SubElement(collision, 'origin', xyz=_fmt_xyz(link.visual_origin_xyz), rpy=_fmt_xyz(link.visual_origin_rpy))
+            geom_c = ET.SubElement(collision, 'geometry')
+            ET.SubElement(geom_c, 'mesh', filename=f"meshes/{col_mesh}", scale="0.001 0.001 0.001")
+    else:
+        collision = ET.SubElement(link_el, 'collision')
+        ET.SubElement(collision, 'origin', xyz=_fmt_xyz(link.center_of_mass), rpy="0 0 0")
+        geom_c = ET.SubElement(collision, 'geometry')
+        ET.SubElement(geom_c, 'box', size=_fmt_xyz(link.bounding_box))
 
     return link_el
 
@@ -77,12 +85,12 @@ def _build_joint_element(joint: JointData) -> ET.Element:
     
     return joint_el
 
-def build_urdf(robot_model: RobotModel, include_meshes: bool = True) -> str:
+def build_urdf(robot_model: RobotModel, include_meshes: bool = True, use_mesh_collision: bool = True) -> str:
     """Generate URDF XML from the parsed RobotModel."""
     robot_el = ET.Element('robot', name=robot_model.name)
     
     for link_name, link in robot_model.links.items():
-        link_el = _build_link_element(link, include_meshes)
+        link_el = _build_link_element(link, include_meshes, use_mesh_collision)
         robot_el.append(link_el)
         
     for joint in robot_model.joints:

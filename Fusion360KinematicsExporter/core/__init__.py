@@ -21,8 +21,9 @@ class LinkData:
     })  # kg·m², with minimum clamp for simulation stability
     visual_color: Tuple[float, float, float, float] = (0.7, 0.7, 0.7, 1.0)  # RGBA normalized
     bounding_box: Tuple[float, float, float] = (0.01, 0.01, 0.01)  # (sx, sy, sz) meters
-    world_transform: Optional[list] = None     # 4x4 matrix as list-of-lists
-    stl_filename: Optional[str] = None         # Relative path to exported STL mesh
+    world_transform: Optional[list] = None     # 4x4 matrix    # Generated meshes
+    stl_filename: Optional[str] = None
+    col_stl_filename: Optional[str] = None         # Relative path to exported STL mesh
     visual_origin_xyz: Tuple[float, float, float] = (0.0, 0.0, 0.0)  # mesh offset in link frame
     visual_origin_rpy: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 

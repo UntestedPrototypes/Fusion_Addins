@@ -118,6 +118,12 @@ class _CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             mesh_dd.listItems.add('High', True)
             mesh_dd.listItems.add('Medium', False)
             mesh_dd.listItems.add('Low', False)
+            
+            col_dd = exp.addDropDownCommandInput(
+                'col_type', 'Collision Geometry',
+                adsk.core.DropDownStyles.TextListDropDownStyle)
+            col_dd.listItems.add('Optimized Mesh (Accurate)', True)
+            col_dd.listItems.add('Bounding Box (Fast)', False)
 
             exp.addBoolValueInput('export_dh', 'Export DH Parameters', True, '', True)
             exp.addBoolValueInput('export_esp', 'Generate ESP32 C Header', True, '', True)
@@ -163,15 +169,21 @@ class _InputChangedHandler(adsk.core.InputChangedEventHandler):
             elif changed.id == 'export_urdf':
                 stl_input = all_inputs.itemById('export_stl')
                 qual_input = all_inputs.itemById('mesh_quality')
+                col_input = all_inputs.itemById('col_type')
                 if stl_input:
                     stl_input.isVisible = changed.value
                 if qual_input:
                     qual_input.isVisible = changed.value and stl_input.value
+                if col_input:
+                    col_input.isVisible = changed.value and stl_input.value
 
             elif changed.id == 'export_stl':
                 qual_input = all_inputs.itemById('mesh_quality')
+                col_input = all_inputs.itemById('col_type')
                 if qual_input:
                     qual_input.isVisible = changed.value
+                if col_input:
+                    col_input.isVisible = changed.value
 
             elif changed.id == 'export_dh':
                 esp_input = all_inputs.itemById('export_esp')
@@ -206,6 +218,8 @@ class _CommandExecuteHandler(adsk.core.CommandEventHandler):
             do_urdf = inputs.itemById('export_urdf').value
             do_stl = inputs.itemById('export_stl').value and do_urdf
             mesh_quality = inputs.itemById('mesh_quality').selectedItem.name
+            
+            use_mesh_collision = 'Optimized' in inputs.itemById('col_type').selectedItem.name
 
             do_dh = inputs.itemById('export_dh').value
             do_esp = inputs.itemById('export_esp').value and do_dh
@@ -295,7 +309,7 @@ class _CommandExecuteHandler(adsk.core.CommandEventHandler):
                 adsk.doEvents()
 
                 stl_exporter.export_stl_meshes(
-                    robot_model, output_dir, mesh_quality, naming)
+                    robot_model, output_dir, mesh_quality, use_mesh_collision, naming)
 
             if progress.wasCancelled:
                 return
@@ -306,7 +320,7 @@ class _CommandExecuteHandler(adsk.core.CommandEventHandler):
                 progress.progressValue = 70
                 adsk.doEvents()
 
-                urdf_xml = urdf_builder.build_urdf(robot_model, include_meshes=do_stl)
+                urdf_xml = urdf_builder.build_urdf(robot_model, include_meshes=do_stl, use_mesh_collision=use_mesh_collision)
                 urdf_path = os.path.join(output_dir, robot_name + '.urdf')
                 urdf_builder.save_urdf(urdf_xml, urdf_path)
 
