@@ -68,6 +68,22 @@ class _CommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             # --- Build dialog inputs ---
             inputs = cmd.commandInputs
 
+            # --- Instructions ---
+            info_group = inputs.addGroupCommandInput('grp_info', '⚠️ Assembly Best Practices (READ FIRST)')
+            info_group.isExpanded = True
+            info = info_group.children
+            
+            help_text = (
+                "<b><font color='red'>WARNING: Make a copy of your assembly before proceeding!</font></b><br>"
+                "The steps below will permanently break links and modify your design. Do not perform them on your master file.<br><br>"
+                "<b>For a successful export, your assembly MUST be structured properly:</b><br><br>"
+                "<b>1. Make Independent:</b> If you copy-pasted a subassembly (e.g., 4 legs), you must right-click them in the browser and select 'Make Independent'. Otherwise, they will be merged.<br><br>"
+                "<b>2. Break Links:</b> If parts are linked to external files (chain icon), right-click and 'Break Link'.<br><br>"
+                "<b>3. Root Joints:</b> Define all Revolute and Prismatic joints in this top-level assembly, not hidden inside subfolders."
+            )
+            txt = info.addTextBoxCommandInput('info_txt', '', help_text, 14, True)
+            txt.isFullWidth = True
+
             # Derive default name from active design
             root_comp_name = 'Robot'
             design = app.activeProduct
@@ -210,6 +226,20 @@ class _CommandExecuteHandler(adsk.core.CommandEventHandler):
                 chain_prefix=chain_pre, auto_sanitize=auto_san
             )
 
+            if os.path.basename(output_dir) != robot_name:
+                output_dir = os.path.join(output_dir, robot_name)
+                
+            if os.path.exists(output_dir) and os.path.isdir(output_dir):
+                if len(os.listdir(output_dir)) > 0:
+                    res = ui.messageBox(
+                        'The folder "{}" already exists and is not empty.\n\nDo you want to continue and overwrite files inside it?'.format(robot_name),
+                        'Folder Exists',
+                        adsk.core.MessageBoxButtonTypes.YesNoButtonType,
+                        adsk.core.MessageBoxIconTypes.WarningIconType
+                    )
+                    if res == adsk.core.DialogResults.DialogNo:
+                        return
+            
             os.makedirs(output_dir, exist_ok=True)
 
             # --- Progress dialog ---
@@ -327,8 +357,8 @@ class _CommandDestroyHandler(adsk.core.CommandEventHandler):
         super().__init__()
 
     def notify(self, args):
-        # Clean up handlers after command dialog closes
-        adsk.terminate()
+        # The command definition and button stay active.
+        pass
 
 
 # ============================================================
@@ -360,15 +390,20 @@ def run(context):
         cmd_def.commandCreated.add(on_created)
         _handlers.append(on_created)
 
-        # Add button to Solid > Utilities panel
+        # Add button to panel
         workspace = ui.workspaces.itemById('FusionSolidEnvironment')
         if workspace:
-            panel = workspace.toolbarPanels.itemById(TOOLBAR_PANEL_ID)
+            panel = workspace.toolbarPanels.itemById('UtilityPanel')
+            if not panel:
+                panel = workspace.toolbarPanels.itemById('SolidScriptsAddinsPanel')
+                
             if panel:
                 existing = panel.controls.itemById(COMMAND_ID)
                 if existing:
                     existing.deleteMe()
-                panel.controls.addCommand(cmd_def)
+                
+                cmd_control = panel.controls.addCommand(cmd_def)
+                cmd_control.isPromoted = False # Forces it into the drop-down menu instead of the main ribbon
 
     except:
         ui.messageBox('Add-In run() failed:\n{}'.format(traceback.format_exc()))
@@ -382,7 +417,9 @@ def stop(context):
         # Remove toolbar button
         workspace = ui.workspaces.itemById('FusionSolidEnvironment')
         if workspace:
-            panel = workspace.toolbarPanels.itemById(TOOLBAR_PANEL_ID)
+            panel = workspace.toolbarPanels.itemById('UtilityPanel')
+            if not panel:
+                panel = workspace.toolbarPanels.itemById('SolidScriptsAddinsPanel')
             if panel:
                 ctrl = panel.controls.itemById(COMMAND_ID)
                 if ctrl:
