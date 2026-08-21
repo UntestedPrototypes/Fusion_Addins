@@ -1,0 +1,13 @@
+{
+    "autodeskProduct": "Fusion",
+    "type": "addin",
+    "id": "f360-kinematics-exporter-urdf-dh-001",
+    "author": "",
+    "description": {
+        "": "Export assembly joints as URDF and DH parameters for ESP32."
+    },
+    "version": "1.0.0",
+    "runOnStartup": false,
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}
