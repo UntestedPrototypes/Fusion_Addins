@@ -74,14 +74,15 @@ class _CreatedHandler(adsk.core.CommandCreatedEventHandler):
             cmd.isRepeatable = False
             inputs = cmd.commandInputs
 
-            sel_mode = inputs.addDropDownCommandInput(
+            grp_sel = inputs.addGroupCommandInput("grp_sel", "Selection")
+            sel_mode = grp_sel.children.addDropDownCommandInput(
                 "sel_mode", "Select By",
                 adsk.core.DropDownStyles.TextListDropDownStyle
             )
             sel_mode.listItems.add("Components", True)
             sel_mode.listItems.add("Bodies", False)
 
-            sel_input = inputs.addSelectionInput(
+            sel_input = grp_sel.children.addSelectionInput(
                 "components", "Selection",
                 "Select components or bodies to export"
             )
@@ -89,28 +90,32 @@ class _CreatedHandler(adsk.core.CommandCreatedEventHandler):
             sel_input.addSelectionFilter("RootComponents")
             sel_input.setSelectionLimits(1, 0)
 
-            inputs.addBoolValueInput("chk_solid",      "Solid bodies",      True, "", True)
-            inputs.addBoolValueInput("chk_surface",    "Surface bodies",    True, "", False)
-            inputs.addBoolValueInput("chk_sheetmetal", "Sheet metal bodies", True, "", False)
+            grp_sel.children.addBoolValueInput(
+                "chk_recurse", "Include sub-component bodies", True, "", False
+            )
 
-            drop = inputs.addDropDownCommandInput(
+            grp_types = inputs.addGroupCommandInput("grp_types", "Body Types")
+            grp_types.children.addBoolValueInput("chk_solid",      "Solid bodies",      True, "", True)
+            grp_types.children.addBoolValueInput("chk_surface",    "Surface bodies",    True, "", False)
+            grp_types.children.addBoolValueInput("chk_sheetmetal", "Sheet metal bodies", True, "", False)
+            grp_types.children.addBoolValueInput("chk_visible_only", "Export only visible bodies", True, "", True)
+
+            grp_export = inputs.addGroupCommandInput("grp_export", "Export Options")
+            drop = grp_export.children.addDropDownCommandInput(
                 "format", "Export Format",
                 adsk.core.DropDownStyles.TextListDropDownStyle
             )
             for label in FORMATS:
                 drop.listItems.add(label, label == "STEP (.step)")
-
-            inputs.addBoolValueInput(
+            grp_export.children.addBoolValueInput(
                 "chk_compname", "Include component name in filename", True, "", False
             )
-            inputs.addBoolValueInput(
-                "chk_recurse", "Include sub-component bodies", True, "", False
-            )
 
-            inputs.addStringValueInput("prefix", "Filename Prefix", "")
-            inputs.addBoolValueInput("chk_filename_prefix", "Use document name as prefix", True, "", False)
-            inputs.addStringValueInput("suffix", "Filename Suffix", "")
-            inputs.addBoolValueInput("chk_milestone_suffix", "Use milestone as suffix (V#)", True, "", False)
+            grp_naming = inputs.addGroupCommandInput("grp_naming", "Naming Options")
+            grp_naming.children.addStringValueInput("prefix", "Filename Prefix", "")
+            grp_naming.children.addBoolValueInput("chk_filename_prefix", "Use document name as prefix", True, "", False)
+            grp_naming.children.addStringValueInput("suffix", "Filename Suffix", "")
+            grp_naming.children.addBoolValueInput("chk_milestone_suffix", "Use milestone as suffix (V#)", True, "", False)
 
             h_exec = _ExecuteHandler()
             cmd.execute.add(h_exec)
@@ -228,26 +233,30 @@ def _restore(comp, snapshot):
 # ---------------------------------------------------------------------------
 # Collect (comp, body_index) pairs - recurse only when recurse=True
 # ---------------------------------------------------------------------------
-def _collect_bodies(comp, want_solid, want_surf, want_sm, inc_comp,
+def _collect_bodies(node, want_solid, want_surf, want_sm, visible_only, inc_comp,
                     prefix, suffix, folder, ext, plan, skipped,
                     seen_comp_ids, seen_body_tokens, recurse, is_top_level):
+    comp = node.component if adsk.fusion.Occurrence.cast(node) else node
+    if not comp:
+        return
     if comp.id in seen_comp_ids:
         return
     seen_comp_ids.add(comp.id)
 
     comp_safe = _safe_name(comp.name)
-    bodies    = comp.bRepBodies
+    bodies    = node.bRepBodies
 
     for i in range(bodies.count):
-        body = bodies.item(i)
+        proxy_body = bodies.item(i)
+        native_body = proxy_body.nativeObject if proxy_body.assemblyContext else proxy_body
         
-        if body.entityToken in seen_body_tokens:
+        if native_body.entityToken in seen_body_tokens:
             continue
             
-        if body.isSheetMetal:
+        if native_body.isSheetMetal:
             keep = want_sm
             kind = "sheet metal"
-        elif body.isSolid:
+        elif native_body.isSolid:
             keep = want_solid
             kind = "solid"
         else:
@@ -255,12 +264,17 @@ def _collect_bodies(comp, want_solid, want_surf, want_sm, inc_comp,
             kind = "surface"
 
         if not keep:
-            skipped.append("{}/{} ({})".format(comp.name, body.name, kind))
+            skipped.append("{}/{} ({})".format(comp.name, native_body.name, kind))
             continue
             
-        seen_body_tokens.add(body.entityToken)
+        # Check proxy body visibility
+        if visible_only and not proxy_body.isVisible:
+            skipped.append("{}/{} (hidden)".format(comp.name, native_body.name))
+            continue
+            
+        seen_body_tokens.add(native_body.entityToken)
 
-        body_safe = _safe_name(body.name)
+        body_safe = _safe_name(native_body.name)
         base_name = "{}_{}".format(comp_safe, body_safe) if inc_comp else body_safe
 
         if prefix:
@@ -269,14 +283,22 @@ def _collect_bodies(comp, want_solid, want_surf, want_sm, inc_comp,
             base_name = base_name + "_" + suffix
 
         filepath = os.path.join(folder, base_name + ext)
-        plan.append((comp, i, body.name, filepath))
+        # Store native_body index
+        # We need the index of native_body in comp.bRepBodies for _save_and_isolate
+        native_idx = -1
+        for j in range(comp.bRepBodies.count):
+            if comp.bRepBodies.item(j).entityToken == native_body.entityToken:
+                native_idx = j
+                break
+        
+        if native_idx != -1:
+            plan.append((comp, native_idx, native_body.name, filepath))
 
     if recurse:
-        for j in range(comp.occurrences.count):
-            sub_occ  = comp.occurrences.item(j)
-            sub_comp = sub_occ.component
-            if sub_comp:
-                _collect_bodies(sub_comp, want_solid, want_surf, want_sm, inc_comp,
+        for j in range(node.occurrences.count):
+            sub_occ  = node.occurrences.item(j)
+            if sub_occ:
+                _collect_bodies(sub_occ, want_solid, want_surf, want_sm, visible_only, inc_comp,
                                 prefix, suffix, folder, ext, plan, skipped,
                                 seen_comp_ids, seen_body_tokens, recurse, is_top_level=False)
 
@@ -293,6 +315,7 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
             want_solid = inputs.itemById("chk_solid").value
             want_surf  = inputs.itemById("chk_surface").value
             want_sm    = inputs.itemById("chk_sheetmetal").value
+            visible_only = inputs.itemById("chk_visible_only").value
             inc_comp   = inputs.itemById("chk_compname").value
             recurse    = inputs.itemById("chk_recurse").value
             sel_input  = inputs.itemById("components")
@@ -329,7 +352,7 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
 
             dlg = ui.createFolderDialog()
             dlg.title            = "Select Output Folder"
-            dlg.initialDirectory = os.path.expanduser("~")
+            dlg.initialDirectory = os.path.join(os.path.expanduser("~"), "Documents")
             if dlg.showDialog() != adsk.core.DialogResults.DialogOK:
                 return
             folder = dlg.folder
@@ -354,10 +377,11 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
                     selected_bodies.append((comp, native_body))
                 else:
                     occ    = adsk.fusion.Occurrence.cast(entity)
-                    comp   = occ.component if occ else adsk.fusion.Component.cast(entity)
+                    node   = occ if occ else adsk.fusion.Component.cast(entity)
+                    comp   = occ.component if occ else node
                     if comp and comp.id not in seen_sel_ids:
                         seen_sel_ids.add(comp.id)
-                        top_components.append(comp)
+                        top_components.append(node)
 
             if not top_components and not selected_bodies:
                 ui.messageBox("No valid components or bodies found in selection.")
@@ -372,6 +396,8 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
                 if native_body.entityToken in seen_body_tokens:
                     continue
                 seen_body_tokens.add(native_body.entityToken)
+                
+                # We do NOT check visibility here because the user explicitly selected this body
 
                 body_idx = -1
                 for j in range(comp.bRepBodies.count):
@@ -395,8 +421,8 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
                 filepath = os.path.join(folder, base_name + ext)
                 plan.append((comp, body_idx, native_body.name, filepath))
 
-            for comp in top_components:
-                _collect_bodies(comp, want_solid, want_surf, want_sm, inc_comp,
+            for node in top_components:
+                _collect_bodies(node, want_solid, want_surf, want_sm, visible_only, inc_comp,
                                 prefix, suffix, folder, ext, plan, skipped,
                                 seen_comp_ids, seen_body_tokens, recurse, is_top_level=True)
 
