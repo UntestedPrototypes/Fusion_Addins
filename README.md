@@ -7,7 +7,7 @@ These addons and guide were AI generated. It covers Three add-ins for Autodesk F
 | **Batch Bodies Exporter** | Exports individual bodies from selected components to STEP, STL, 3MF, OBJ, IGES, or SAT |
 | **Export Flat Patterns** | Exports sheet-metal flat patterns from selected components to DXF, IGES, STEP, or SAT |
 | **HoleToSlot** | Creates a slot from a hole perpendicular to a reference edge. Used to add tolerances. |
-
+| **Fusion360KinematicsExporter** | Exports assemblies as URDF file. |
 ---
 
 ## Requirements
