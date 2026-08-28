@@ -74,11 +74,19 @@ class _CreatedHandler(adsk.core.CommandCreatedEventHandler):
             cmd.isRepeatable = False
             inputs = cmd.commandInputs
 
+            sel_mode = inputs.addDropDownCommandInput(
+                "sel_mode", "Select By",
+                adsk.core.DropDownStyles.TextListDropDownStyle
+            )
+            sel_mode.listItems.add("Components", True)
+            sel_mode.listItems.add("Bodies", False)
+
             sel_input = inputs.addSelectionInput(
-                "components", "Components",
-                "Select one or more components to export bodies from"
+                "components", "Selection",
+                "Select components or bodies to export"
             )
             sel_input.addSelectionFilter("Occurrences")
+            sel_input.addSelectionFilter("RootComponents")
             sel_input.setSelectionLimits(1, 0)
 
             inputs.addBoolValueInput("chk_solid",      "Solid bodies",      True, "", True)
@@ -100,7 +108,9 @@ class _CreatedHandler(adsk.core.CommandCreatedEventHandler):
             )
 
             inputs.addStringValueInput("prefix", "Filename Prefix", "")
+            inputs.addBoolValueInput("chk_filename_prefix", "Use document name as prefix", True, "", False)
             inputs.addStringValueInput("suffix", "Filename Suffix", "")
+            inputs.addBoolValueInput("chk_milestone_suffix", "Use milestone as suffix (V#)", True, "", False)
 
             h_exec = _ExecuteHandler()
             cmd.execute.add(h_exec)
@@ -109,6 +119,10 @@ class _CreatedHandler(adsk.core.CommandCreatedEventHandler):
             h_val = _ValidateHandler()
             cmd.validateInputs.add(h_val)
             _handlers.append(h_val)
+            
+            h_in = _InputChangedHandler()
+            cmd.inputChanged.add(h_in)
+            _handlers.append(h_in)
 
         except Exception:
             ui.messageBox("ExportBodies commandCreated error:\n" + traceback.format_exc())
@@ -125,9 +139,38 @@ class _ValidateHandler(adsk.core.ValidateInputsEventHandler):
             surf   = inputs.itemById("chk_surface").value
             sm     = inputs.itemById("chk_sheetmetal").value
             sel    = inputs.itemById("components")
-            args.areInputsValid = (solid or surf or sm) and sel.selectionCount > 0
+            
+            has_bodies = False
+            for i in range(sel.selectionCount):
+                if adsk.fusion.BRepBody.cast(sel.selection(i).entity):
+                    has_bodies = True
+                    break
+                    
+            args.areInputsValid = (solid or surf or sm or has_bodies) and sel.selectionCount > 0
         except Exception:
             args.areInputsValid = False
+
+
+# ---------------------------------------------------------------------------
+# InputChanged
+# ---------------------------------------------------------------------------
+class _InputChangedHandler(adsk.core.InputChangedEventHandler):
+    def notify(self, args):
+        try:
+            cmd_input = args.input
+            if cmd_input.id == "sel_mode":
+                inputs = cmd_input.parentCommand.commandInputs
+                sel_input = inputs.itemById("components")
+                sel_input.clearSelectionFilter()
+                sel_input.clearSelection()
+                if cmd_input.selectedItem.name == "Bodies":
+                    sel_input.addSelectionFilter("SolidBodies")
+                    sel_input.addSelectionFilter("SurfaceBodies")
+                else:
+                    sel_input.addSelectionFilter("Occurrences")
+                    sel_input.addSelectionFilter("RootComponents")
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +230,7 @@ def _restore(comp, snapshot):
 # ---------------------------------------------------------------------------
 def _collect_bodies(comp, want_solid, want_surf, want_sm, inc_comp,
                     prefix, suffix, folder, ext, plan, skipped,
-                    seen_comp_ids, recurse, is_top_level):
+                    seen_comp_ids, seen_body_tokens, recurse, is_top_level):
     if comp.id in seen_comp_ids:
         return
     seen_comp_ids.add(comp.id)
@@ -197,6 +240,10 @@ def _collect_bodies(comp, want_solid, want_surf, want_sm, inc_comp,
 
     for i in range(bodies.count):
         body = bodies.item(i)
+        
+        if body.entityToken in seen_body_tokens:
+            continue
+            
         if body.isSheetMetal:
             keep = want_sm
             kind = "sheet metal"
@@ -210,6 +257,8 @@ def _collect_bodies(comp, want_solid, want_surf, want_sm, inc_comp,
         if not keep:
             skipped.append("{}/{} ({})".format(comp.name, body.name, kind))
             continue
+            
+        seen_body_tokens.add(body.entityToken)
 
         body_safe = _safe_name(body.name)
         base_name = "{}_{}".format(comp_safe, body_safe) if inc_comp else body_safe
@@ -229,7 +278,7 @@ def _collect_bodies(comp, want_solid, want_surf, want_sm, inc_comp,
             if sub_comp:
                 _collect_bodies(sub_comp, want_solid, want_surf, want_sm, inc_comp,
                                 prefix, suffix, folder, ext, plan, skipped,
-                                seen_comp_ids, recurse, is_top_level=False)
+                                seen_comp_ids, seen_body_tokens, recurse, is_top_level=False)
 
 
 # ---------------------------------------------------------------------------
@@ -248,8 +297,35 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
             recurse    = inputs.itemById("chk_recurse").value
             sel_input  = inputs.itemById("components")
 
-            prefix = _safe_name(inputs.itemById("prefix").value.strip())
-            suffix = _safe_name(inputs.itemById("suffix").value.strip())
+            custom_prefix = inputs.itemById("prefix").value.strip()
+            custom_suffix = inputs.itemById("suffix").value.strip()
+            
+            chk_filename_prefix = inputs.itemById("chk_filename_prefix").value
+            chk_milestone_suffix = inputs.itemById("chk_milestone_suffix").value
+
+            doc_name = app.activeDocument.name
+            import re
+            match = re.search(r'^(.*?)(?:\s+v(\d+))?$', doc_name, re.IGNORECASE)
+            base_doc_name = match.group(1).strip() if match else doc_name
+            version_num = match.group(2) if (match and match.group(2)) else ""
+
+            combined_prefix = custom_prefix
+            if chk_filename_prefix:
+                if combined_prefix:
+                    combined_prefix = combined_prefix + "_" + base_doc_name
+                else:
+                    combined_prefix = base_doc_name
+
+            combined_suffix = custom_suffix
+            if chk_milestone_suffix:
+                ver_str = "V" + version_num if version_num else "V1"
+                if combined_suffix:
+                    combined_suffix = combined_suffix + "_" + ver_str
+                else:
+                    combined_suffix = ver_str
+
+            prefix = _safe_name(combined_prefix) if combined_prefix else ""
+            suffix = _safe_name(combined_suffix) if combined_suffix else ""
 
             dlg = ui.createFolderDialog()
             dlg.title            = "Select Output Folder"
@@ -266,26 +342,63 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
 
             seen_sel_ids   = set()
             top_components = []
+            selected_bodies = []
+            
             for i in range(sel_input.selectionCount):
                 entity = sel_input.selection(i).entity
-                occ    = adsk.fusion.Occurrence.cast(entity)
-                comp   = occ.component if occ else adsk.fusion.Component.cast(entity)
-                if comp and comp.id not in seen_sel_ids:
-                    seen_sel_ids.add(comp.id)
-                    top_components.append(comp)
+                body = adsk.fusion.BRepBody.cast(entity)
+                
+                if body:
+                    native_body = body.nativeObject if body.assemblyContext else body
+                    comp = native_body.parentComponent
+                    selected_bodies.append((comp, native_body))
+                else:
+                    occ    = adsk.fusion.Occurrence.cast(entity)
+                    comp   = occ.component if occ else adsk.fusion.Component.cast(entity)
+                    if comp and comp.id not in seen_sel_ids:
+                        seen_sel_ids.add(comp.id)
+                        top_components.append(comp)
 
-            if not top_components:
-                ui.messageBox("No valid components found in selection.")
+            if not top_components and not selected_bodies:
+                ui.messageBox("No valid components or bodies found in selection.")
                 return
 
             plan          = []
             skipped       = []
             seen_comp_ids = set()
+            seen_body_tokens = set()
+
+            for comp, native_body in selected_bodies:
+                if native_body.entityToken in seen_body_tokens:
+                    continue
+                seen_body_tokens.add(native_body.entityToken)
+
+                body_idx = -1
+                for j in range(comp.bRepBodies.count):
+                    if comp.bRepBodies.item(j).entityToken == native_body.entityToken:
+                        body_idx = j
+                        break
+                
+                if body_idx == -1:
+                    skipped.append("{}/{} (not found in native component)".format(comp.name, native_body.name))
+                    continue
+
+                body_safe = _safe_name(native_body.name)
+                comp_safe = _safe_name(comp.name)
+                base_name = "{}_{}".format(comp_safe, body_safe) if inc_comp else body_safe
+                
+                if prefix:
+                    base_name = prefix + "_" + base_name
+                if suffix:
+                    base_name = base_name + "_" + suffix
+                    
+                filepath = os.path.join(folder, base_name + ext)
+                plan.append((comp, body_idx, native_body.name, filepath))
 
             for comp in top_components:
                 _collect_bodies(comp, want_solid, want_surf, want_sm, inc_comp,
                                 prefix, suffix, folder, ext, plan, skipped,
-                                seen_comp_ids, recurse, is_top_level=True)
+                                seen_comp_ids, seen_body_tokens, recurse, is_top_level=True)
 
             if not plan:
                 msg_parts = ["No bodies matched the selected filters."]
