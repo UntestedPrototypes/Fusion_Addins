@@ -295,8 +295,9 @@ def _collect_bodies(node, want_solid, want_surf, want_sm, visible_only, inc_comp
             plan.append((comp, native_idx, native_body.name, filepath))
 
     if recurse:
-        for j in range(node.occurrences.count):
-            sub_occ  = node.occurrences.item(j)
+        occs = node.childOccurrences if adsk.fusion.Occurrence.cast(node) else node.occurrences
+        for j in range(occs.count):
+            sub_occ = occs.item(j)
             if sub_occ:
                 _collect_bodies(sub_occ, want_solid, want_surf, want_sm, visible_only, inc_comp,
                                 prefix, suffix, folder, ext, plan, skipped,
