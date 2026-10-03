@@ -1,0 +1,13 @@
+{
+    "autodeskProduct": "Fusion360",
+    "type": "addin",
+    "id": "f360-urdf-exporter-8b9a2c10-e5d4-4f67-8901",
+    "author": "Antigravity Robotics",
+    "description": {
+        "": "Export Fusion 360 assemblies to URDF with sub-assembly support, rigid group merging, sketch/joint-origin handling, and configurable mesh quality."
+    },
+    "version": "1.1.0",
+    "runOnStartup": false,
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}

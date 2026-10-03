@@ -1,0 +1,13 @@
+{
+    "autodeskProduct": "Fusion360",
+    "type": "addin",
+    "id": "c49a371f-b67e-4091-a88f-9a1b02b9f840",
+    "author": "Antigravity",
+    "description": {
+        "": "Automatically generates laser-cut interlocking joints (Tab & Slot, Finger Joints, and Cross Joints) with kerf clearance compensation and assembly chamfers."
+    },
+    "version": "1.0.0",
+    "runOnStartup": false,
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}
