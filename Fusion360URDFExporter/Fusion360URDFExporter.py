@@ -60,6 +60,7 @@ from config.defaults import (
     MESH_QUALITIES,
     DEFAULT_MESH_QUALITY,
     DEFAULT_SKIP_INVISIBLE,
+    DEFAULT_INERTIA_VISIBLE_ONLY,
     JOINT_NAMING_PRESETS,
     DEFAULT_JOINT_NAMING_PATTERN
 )
@@ -175,6 +176,13 @@ class URDFCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             skip_inv_chk = inputs.addBoolValueInput('skipInvisibleMeshes', 'Skip Invisible Meshes', True, '', DEFAULT_SKIP_INVISIBLE)
             skip_inv_chk.tooltip = 'Skip STL mesh export for hidden or invisible components to enable fast testing while preserving all joints and kinematic tree'
 
+            # 7b. Inertia from Visible Bodies Only Checkbox (Default: False)
+            inertia_vis_chk = inputs.addBoolValueInput('inertiaVisibleOnly', 'Inertia From Visible Bodies Only', True, '', DEFAULT_INERTIA_VISIBLE_ONLY)
+            inertia_vis_chk.tooltip = (
+                'When checked, mass, center of mass and inertia are computed only from visible bodies.\n'
+                'When unchecked, all bodies (including hidden ones) contribute to the inertial values.'
+            )
+
             # 8. Option to open the exported package in Explorer when finished
             open_chk = inputs.addBoolValueInput('openExplorerOnFinish', 'Open in Explorer', True, '', True)
             open_chk.tooltip = 'Open Windows Explorer at the export folder after export completes'
@@ -198,12 +206,17 @@ class URDFCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
                 '• <b>Z-Axis is Motion Axis:</b> In URDF, the <b>Z-axis is always the motion axis</b>! '
                 'Orient each Joint Origin so its blue Z-axis arrow aligns with the desired axis of rotation (Revolute) or sliding (Prismatic).<br/>'
                 '• The Joint Origin anchor point defines the joint origin (xyz) in the URDF.<br/><br/>'
-                '<b>3. Rigid Groups:</b><br/>'
+                '<b>3. End-Effectors & Reference Frames:</b><br/>'
+                '• Any <b>Joint Origin not part of a joint</b> is automatically exported as a <b>fixed joint & virtual child link</b> '
+                'to serve as an end-effector, tool center point (TCP), or reference frame.<br/>'
+                '• <b>Exclusion Rule:</b> Any Joint Origin whose name ends with <code>_exclude</code> (case-insensitive, e.g. <code>Ref_exclude</code>) '
+                'is skipped from export.<br/><br/>'
+                '<b>4. Rigid Groups:</b><br/>'
                 '• <b>Rigid Groups</b> merge components and bodies into a single rigid link (combining meshes, mass, and inertia).<br/>'
                 '• Rigid joints NOT made between two Joint Origins also merge parts into their parent link.'
                 '</div>'
             )
-            guide_box = guide_grp.children.addTextBoxCommandInput('guidelinesText', '', guidelines_html, 14, True)
+            guide_box = guide_grp.children.addTextBoxCommandInput('guidelinesText', '', guidelines_html, 18, True)
             guide_box.isFullWidth = True
 
         except:
@@ -334,6 +347,8 @@ class URDFCommandExecuteHandler(adsk.core.CommandEventHandler):
             robot_name = robot_name_input.value if robot_name_input else 'robot'
             robot_name = re.sub(r'[^a-zA-Z0-9_]', '_', robot_name).strip('_').lower() or 'robot'
             skip_invisible = skip_inv_input.value if skip_inv_input else DEFAULT_SKIP_INVISIBLE
+            inertia_vis_input = inputs.itemById('inertiaVisibleOnly')
+            inertia_visible_only = inertia_vis_input.value if inertia_vis_input else DEFAULT_INERTIA_VISIBLE_ONLY
 
             pattern_input = inputs.itemById('jointNamingPattern')
             naming_pattern = pattern_input.value.strip() if pattern_input and pattern_input.value.strip() else DEFAULT_JOINT_NAMING_PATTERN
@@ -419,8 +434,8 @@ class URDFCommandExecuteHandler(adsk.core.CommandEventHandler):
 
             # 2. Analyze kinematic joints
             progress.update("Step 2/7: Analyzing joints and kinematic motion...", 16)
-            analyzer = JointAnalyzer(root)
-            joint_infos = analyzer.analyze_all()
+            analyzer = JointAnalyzer(root, tree_nodes=walker.all_nodes)
+            joint_infos = analyzer.analyze_all(selected_base_origin=selected_base_jo)
 
             if progress.was_cancelled:
                 progress.hide()
@@ -542,7 +557,7 @@ class URDFCommandExecuteHandler(adsk.core.CommandEventHandler):
 
             # 6. Compute Physical Inertia Properties
             progress.update("Step 6/7: Computing link inertial properties...", 82)
-            inertial_calc = InertialCalculator()
+            inertial_calc = InertialCalculator(visible_only=inertia_visible_only)
             for i, link in enumerate(links):
                 if progress.was_cancelled:
                     cancelled = True
@@ -596,6 +611,7 @@ class URDFCommandExecuteHandler(adsk.core.CommandEventHandler):
                 f"Joints: {len(joints)}\n"
                 f"Joint Naming: {naming_pattern}\n"
                 f"Visual Quality: {mesh_quality}\n"
+                f"Inertia From: {'Visible bodies only' if inertia_visible_only else 'All bodies'}\n"
                 f"Output Location:\n{urdf_file_path}"
             )
             ui.messageBox(summary_msg, "Export Succeeded")

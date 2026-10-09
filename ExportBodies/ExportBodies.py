@@ -1,7 +1,10 @@
 
+import adsk
 import adsk.core
 import adsk.fusion
+import json
 import os
+import time
 import traceback
 
 app       = None
@@ -24,11 +27,20 @@ FORMATS = {
 def run(context):
     global app, ui, _cmd_def
     try:
+        _disable_ghosting()
         app = adsk.core.Application.get()
         ui  = app.userInterface
+
+        panel = ui.allToolbarPanels.itemById(PANEL_ID)
+        if panel:
+            ctrl = panel.controls.itemById("ExportBodiesCmd")
+            if ctrl:
+                ctrl.deleteMe()
+
         old = ui.commandDefinitions.itemById("ExportBodiesCmd")
         if old:
             old.deleteMe()
+
         _cmd_def = ui.commandDefinitions.addButtonDefinition(
             "ExportBodiesCmd",
             "Batch Bodies Exporter",
@@ -38,11 +50,9 @@ def run(context):
         h = _CreatedHandler()
         _cmd_def.commandCreated.add(h)
         _handlers.append(h)
-        panel = ui.allToolbarPanels.itemById(PANEL_ID)
+
         if panel:
-            ctrl = panel.controls.itemById("ExportBodiesCmd")
-            if not ctrl:
-                panel.controls.addCommand(_cmd_def)
+            panel.controls.addCommand(_cmd_def)
         else:
             ui.messageBox("ExportBodies: Utility panel not found.")
     except Exception:
@@ -52,13 +62,17 @@ def run(context):
 
 def stop(context):
     try:
-        panel = ui.allToolbarPanels.itemById(PANEL_ID)
-        if panel:
-            ctrl = panel.controls.itemById("ExportBodiesCmd")
-            if ctrl:
-                ctrl.deleteMe()
-        if _cmd_def:
-            _cmd_def.deleteMe()
+        app_stop = adsk.core.Application.get()
+        ui_stop = app_stop.userInterface if app_stop else None
+        if ui_stop:
+            panel = ui_stop.allToolbarPanels.itemById(PANEL_ID)
+            if panel:
+                ctrl = panel.controls.itemById("ExportBodiesCmd")
+                if ctrl:
+                    ctrl.deleteMe()
+            cmd_def = ui_stop.commandDefinitions.itemById("ExportBodiesCmd")
+            if cmd_def:
+                cmd_def.deleteMe()
         _handlers.clear()
     except Exception:
         pass
@@ -176,6 +190,25 @@ class _InputChangedHandler(adsk.core.InputChangedEventHandler):
                     sel_input.addSelectionFilter("RootComponents")
         except Exception:
             pass
+
+
+def _disable_ghosting():
+    try:
+        import ctypes
+        if hasattr(ctypes, "windll") and hasattr(ctypes.windll, "user32"):
+            ctypes.windll.user32.DisableProcessWindowsGhosting()
+    except Exception:
+        pass
+
+
+def _do_events():
+    try:
+        for _ in range(3):
+            adsk.doEvents()
+    except Exception:
+        pass
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +343,7 @@ def _collect_bodies(node, want_solid, want_surf, want_sm, visible_only, inc_comp
 class _ExecuteHandler(adsk.core.CommandEventHandler):
     def notify(self, args):
         try:
+            _disable_ghosting()
             inputs     = args.command.commandInputs
             fmt_label  = inputs.itemById("format").selectedItem.name
             ext, fmt   = FORMATS[fmt_label]
@@ -448,50 +482,122 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
                 overwrite = (answer == adsk.core.DialogResults.DialogYes)
 
             exported, errors = [], []
+            cancelled = False
+            total = len(plan)
 
-            for comp, body_idx, body_name, filepath in plan:
-                if os.path.exists(filepath):
-                    if not overwrite:
-                        skipped.append("{} (not overwritten)".format(
-                            os.path.basename(filepath)))
-                        continue
+            progress = None
+            try:
+                progress = ui.createProgressDialog()
+                if progress:
+                    progress.isCancelButtonShown = True
+                    # show(title, message, min, max, delay)
+                    # Passing delay=0 ensures the dialog appears immediately without delay
+                    progress.show("Exporting Bodies", "Preparing export (%v of %m)...", 0, total, 0)
+                    _do_events()
+                    if progress.wasCancelled:
+                        cancelled = True
+            except Exception:
+                progress = None
+
+            try:
+                if not cancelled:
+                    for idx, (comp, body_idx, body_name, filepath) in enumerate(plan):
+                        _do_events()
+                        if progress and progress.wasCancelled:
+                            progress.message = "Cancelling export... Stopping."
+                            _do_events()
+                            cancelled = True
+                            break
+
+                        filename = os.path.basename(filepath)
+                        display_name = body_name if len(body_name) <= 30 else body_name[:27] + "..."
+                        pct = int((idx / total) * 100)
+
+                        if progress:
+                            progress.progressValue = idx
+                            progress.message = "Exporting body {} of {} ({}%):\n{}".format(
+                                idx + 1, total, pct, display_name
+                            )
+                        _do_events()
+
+                        if progress and progress.wasCancelled:
+                            progress.message = "Cancelling export... Stopping."
+                            _do_events()
+                            cancelled = True
+                            break
+
+                        if os.path.exists(filepath):
+                            if not overwrite:
+                                skipped.append("{} (not overwritten)".format(filename))
+                                if progress:
+                                    progress.progressValue = idx + 1
+                                    _do_events()
+                                continue
+                            try:
+                                os.remove(filepath)
+                            except Exception as exc:
+                                errors.append("{}: could not remove: {}".format(filename, exc))
+                                if progress:
+                                    progress.progressValue = idx + 1
+                                    _do_events()
+                                continue
+
+                        snapshot = _save_and_isolate(comp, body_idx)
+                        _do_events()
+                        try:
+                            body = comp.bRepBodies.item(body_idx)
+                            if fmt == "step":
+                                opts = export_mgr.createSTEPExportOptions(filepath, comp)
+                            elif fmt == "3mf":
+                                opts = export_mgr.createC3MFExportOptions(body, filepath)
+                            elif fmt == "stl":
+                                opts = export_mgr.createSTLExportOptions(body, filepath)
+                            elif fmt == "obj":
+                                opts = export_mgr.createOBJExportOptions(body, filepath)
+                            elif fmt == "iges":
+                                opts = export_mgr.createIGESExportOptions(filepath, comp)
+                            elif fmt == "sat":
+                                opts = export_mgr.createSATExportOptions(filepath, comp)
+                            else:
+                                errors.append("{}: unknown format".format(body_name))
+                                continue
+
+                            if export_mgr.execute(opts):
+                                exported.append(filename)
+                            else:
+                                errors.append("{}: execute() returned False".format(body_name))
+                        except Exception as exc:
+                            errors.append("{}: {}".format(body_name, exc))
+                        finally:
+                            _restore(comp, snapshot)
+                            _do_events()
+
+                        pct_done = int(((idx + 1) / total) * 100)
+                        if progress:
+                            progress.progressValue = idx + 1
+                            progress.message = "Exported body {} of {} ({}%):\n{}".format(
+                                idx + 1, total, pct_done, display_name
+                            )
+                        _do_events()
+
+                        if progress and progress.wasCancelled:
+                            progress.message = "Cancelling export... Stopping."
+                            _do_events()
+                            cancelled = True
+                            break
+
+            finally:
+                if progress:
                     try:
-                        os.remove(filepath)
-                    except Exception as exc:
-                        errors.append("{}: could not remove: {}".format(
-                            os.path.basename(filepath), exc))
-                        continue
-
-                snapshot = _save_and_isolate(comp, body_idx)
-                try:
-                    body = comp.bRepBodies.item(body_idx)
-                    if fmt == "step":
-                        opts = export_mgr.createSTEPExportOptions(filepath, comp)
-                    elif fmt == "3mf":
-                        opts = export_mgr.createC3MFExportOptions(body, filepath)
-                    elif fmt == "stl":
-                        opts = export_mgr.createSTLExportOptions(body, filepath)
-                    elif fmt == "obj":
-                        opts = export_mgr.createOBJExportOptions(body, filepath)
-                    elif fmt == "iges":
-                        opts = export_mgr.createIGESExportOptions(filepath, comp)
-                    elif fmt == "sat":
-                        opts = export_mgr.createSATExportOptions(filepath, comp)
-                    else:
-                        errors.append("{}: unknown format".format(body_name))
-                        _restore(comp, snapshot)
-                        continue
-
-                    if export_mgr.execute(opts):
-                        exported.append(os.path.basename(filepath))
-                    else:
-                        errors.append("{}: execute() returned False".format(body_name))
-                except Exception as exc:
-                    errors.append("{}: {}".format(body_name, exc))
-                finally:
-                    _restore(comp, snapshot)
+                        progress.hide()
+                    except Exception:
+                        pass
+                    progress = None
+                _do_events()
 
             parts = []
+            if cancelled:
+                parts.append("Export cancelled by user.")
             if exported:
                 parts.append("Exported {} file(s) to:\n{}\n\n{}".format(
                     len(exported), folder,

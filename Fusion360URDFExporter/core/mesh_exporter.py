@@ -78,6 +78,36 @@ def get_occ_key(occ):
     return str(id(occ))
 
 
+def is_body_visible(body):
+    """Check if a body and its parent occurrence are visible in the viewport/browser."""
+    if body is None:
+        return True
+    try:
+        if hasattr(body, 'isVisible') and not body.isVisible:
+            return False
+    except Exception:
+        pass
+    try:
+        if hasattr(body, 'isLightBulbOn') and not body.isLightBulbOn:
+            return False
+    except Exception:
+        pass
+
+    occ = getattr(body, '_source_occ', getattr(body, 'assemblyContext', None))
+    if occ:
+        try:
+            if hasattr(occ, 'isVisible') and not occ.isVisible:
+                return False
+        except Exception:
+            pass
+        try:
+            if hasattr(occ, 'isLightBulbOn') and not occ.isLightBulbOn:
+                return False
+        except Exception:
+            pass
+    return True
+
+
 class MeshExporter:
     """Exports link bodies to binary STL format in meters, transformed to link local frame."""
     def __init__(self, design, output_dir, visual_quality=DEFAULT_MESH_QUALITY, skip_invisible=DEFAULT_SKIP_INVISIBLE):
@@ -89,32 +119,7 @@ class MeshExporter:
 
     def _is_body_visible(self, body):
         """Check if a body and its parent occurrence are visible in the viewport/browser."""
-        if body is None:
-            return True
-        try:
-            if hasattr(body, 'isVisible') and not body.isVisible:
-                return False
-        except Exception:
-            pass
-        try:
-            if hasattr(body, 'isLightBulbOn') and not body.isLightBulbOn:
-                return False
-        except Exception:
-            pass
-        
-        occ = getattr(body, '_source_occ', getattr(body, 'assemblyContext', None))
-        if occ:
-            try:
-                if hasattr(occ, 'isVisible') and not occ.isVisible:
-                    return False
-            except Exception:
-                pass
-            try:
-                if hasattr(occ, 'isLightBulbOn') and not occ.isLightBulbOn:
-                    return False
-            except Exception:
-                pass
-        return True
+        return is_body_visible(body)
 
     def _can_batch_export_occurrence(self, occ, occ_bodies):
         """Determine if an occurrence can be exported in one batch STL pass.
@@ -234,6 +239,25 @@ class MeshExporter:
         # Scale from document unit (e.g. mm) to cm (for Matrix3D compatibility):
         units_to_cm = units_to_m * 100.0
 
+        # Fast path: tessellate each body in memory (no ExportManager / temp files /
+        # visibility toggling). Only bodies that fail fall through to STL export below.
+        if HAS_ADSK and self.design:
+            remaining = []
+            total_bodies = len(bodies)
+            for idx, body in enumerate(bodies):
+                if progress_callback:
+                    if progress_callback(idx + 1, total_bodies, getattr(body, 'name', f"Body {idx+1}")) is False:
+                        return False
+                occ = getattr(body, '_source_occ', getattr(body, 'assemblyContext', None))
+                body_world = get_world_transform_as_list(occ) if occ else list(IDENTITY_16)
+                body_to_link = pure_matrix_multiply(T_link_inv, body_world)
+                triangles = self._calculate_body_triangles(body, quality_str, body_to_link)
+                if triangles is None:
+                    remaining.append(body)
+                else:
+                    all_triangles.extend(triangles)
+            bodies = remaining
+
         # Group bodies by source occurrence using a string key to avoid hashing unhashable C++ objects
         occ_map = {}  # key -> (occ, [bodies])
         for body in bodies:
@@ -287,6 +311,57 @@ class MeshExporter:
 
         write_binary_stl(filepath, all_triangles)
         return True
+
+    def _calculate_body_triangles(self, body, quality_str, body_to_link):
+        """Tessellate a body in memory with Fusion's MeshCalculator and transform into link frame (meters).
+
+        Returns None if tessellation fails, so the caller can fall back to STL export.
+        """
+        try:
+            # Proxy bodies live in assembly space; the native body is in component space,
+            # which is what body_to_link expects (same as the STL export path).
+            native = getattr(body, 'nativeObject', None)
+            calc = (native or body).meshManager.createMeshCalculator()
+            TMQ = adsk.fusion.TriangleMeshQualityOptions
+            if quality_str == 'Low':
+                calc.setQuality(TMQ.LowQualityTriangleMesh)
+            elif quality_str == 'High':
+                calc.setQuality(TMQ.HighQualityTriangleMesh)
+            else:
+                calc.setQuality(TMQ.NormalQualityTriangleMesh)
+            mesh = calc.calculate()
+            if mesh is None:
+                return None
+            coords = mesh.nodeCoordinatesAsDouble  # flat [x, y, z, ...] in cm
+            indices = mesh.nodeIndices             # flat [i0, i1, i2, ...]
+        except Exception as e:
+            try:
+                adsk.core.Application.get().log(f"Warning: MeshCalculator failed for '{getattr(body, 'name', body)}': {e}")
+            except Exception:
+                pass
+            return None
+
+        m = body_to_link or IDENTITY_16
+        m0, m1, m2, m3 = m[0] * CM_TO_M, m[1] * CM_TO_M, m[2] * CM_TO_M, m[3] * CM_TO_M
+        m4, m5, m6, m7 = m[4] * CM_TO_M, m[5] * CM_TO_M, m[6] * CM_TO_M, m[7] * CM_TO_M
+        m8, m9, m10, m11 = m[8] * CM_TO_M, m[9] * CM_TO_M, m[10] * CM_TO_M, m[11] * CM_TO_M
+
+        # Transform each shared node once (cm -> link frame in m), then assemble triangles
+        verts = []
+        for i in range(0, len(coords) - 2, 3):
+            x, y, z = coords[i], coords[i + 1], coords[i + 2]
+            verts.append((
+                m0 * x + m1 * y + m2 * z + m3,
+                m4 * x + m5 * y + m6 * z + m7,
+                m8 * x + m9 * y + m10 * z + m11
+            ))
+
+        compute_normal = self._compute_normal
+        triangles = []
+        for i in range(0, len(indices) - 2, 3):
+            v0, v1, v2 = verts[indices[i]], verts[indices[i + 1]], verts[indices[i + 2]]
+            triangles.append((compute_normal(v0, v1, v2), v0, v1, v2))
+        return triangles
 
     def _export_occurrence_triangles(self, occ, quality_str, occ_to_link, units_to_cm):
         """Export all bodies of an occurrence in a single native ExportManager pass."""
@@ -585,16 +660,11 @@ def parse_stl_file(filepath):
 
         # If file size matches or accommodates exact binary STL formula
         if file_size >= expected_size and num_triangles > 0:
-            triangles = []
             data = f.read(num_triangles * 50)
-            for i in range(num_triangles):
-                offset = i * 50
-                n = struct.unpack_from('<3f', data, offset)
-                v0 = struct.unpack_from('<3f', data, offset + 12)
-                v1 = struct.unpack_from('<3f', data, offset + 24)
-                v2 = struct.unpack_from('<3f', data, offset + 36)
-                triangles.append((n, v0, v1, v2))
-            return triangles
+            return [
+                (t[0:3], t[3:6], t[6:9], t[9:12])
+                for t in struct.iter_unpack('<12fH', data)
+            ]
 
     # Fallback: ASCII STL parser
     triangles = []
@@ -629,13 +699,9 @@ def write_binary_stl(filepath, triangles):
         # 4-byte unsigned int: triangle count
         f.write(struct.pack('<I', len(triangles)))
 
-        # 50 bytes per triangle
-        for n, v0, v1, v2 in triangles:
-            # Normal
-            f.write(struct.pack('<3f', float(n[0]), float(n[1]), float(n[2])))
-            # Vertices
-            f.write(struct.pack('<3f', float(v0[0]), float(v0[1]), float(v0[2])))
-            f.write(struct.pack('<3f', float(v1[0]), float(v1[1]), float(v1[2])))
-            f.write(struct.pack('<3f', float(v2[0]), float(v2[1]), float(v2[2])))
-            # Attribute byte count (2 bytes)
-            f.write(struct.pack('<H', 0))
+        # 50 bytes per triangle: normal, 3 vertices, 2-byte attribute count
+        pack = struct.Struct('<12fH').pack
+        f.write(b''.join(
+            pack(n[0], n[1], n[2], v0[0], v0[1], v0[2], v1[0], v1[1], v1[2], v2[0], v2[1], v2[2], 0)
+            for n, v0, v1, v2 in triangles
+        ))

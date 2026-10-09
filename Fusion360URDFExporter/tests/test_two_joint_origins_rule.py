@@ -23,6 +23,8 @@ class MockGeometry:
 
 class MockJointOrigin:
     """Mock representing an adsk.fusion.JointOrigin."""
+    __hash__ = None  # Simulate Fusion 360 C++ object unhashability
+
     def __init__(self, name="JO", origin=(0.0, 0.0, 0.0)):
         self.name = name
         self.geometry = MockGeometry(origin)

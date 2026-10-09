@@ -21,7 +21,12 @@ A high-performance Autodesk Fusion 360 add-in that exports assemblies and nested
    - **Rigid Joints Included as Fixed**: Rigid joints made between two Joint Origins create `<joint type="fixed">` elements in the URDF, preserving child components as independent links.
    - **Coordinate & Axis Alignment**: The Joint Origin's Z-axis defines the URDF motion axis (+Z), and the origin point defines the relative transform origin.
 
-4. **Chain & Level Joint Naming (User-Selectable & Customizable)**:
+4. **Standalone Joint Origins as End-Effectors (TCP)**:
+   - **Automatic End-Effector Export**: Any Joint Origin in the assembly that is **not part of a joint** is automatically exported as a **fixed joint** (`<joint type="fixed">`) connecting the parent link to a clean virtual child link (`<link name="..."/>`).
+   - **Exclusion Rule**: Any Joint Origin whose name ends with `_exclude` (case-insensitive, e.g. `guide_exclude`, `Ref_EXCLUDE`) is skipped from export.
+   - **Name Preservation**: End-effector joints preserve their user-defined CAD names (e.g. `tcp_joint`, `camera_frame_joint`) instead of being renamed by chain/level patterns.
+
+5. **Chain & Level Joint Naming (User-Selectable & Customizable)**:
    - Identifies kinematic chains originating from `base_link` and topological depth levels along each branch.
    - User-selectable presets and editable template pattern in the export dialog:
      - `{branch_name}_c{chain}_l{level}` (**Default**, e.g. `leg_1_c1_l1`, `leg_1_c1_l2`, `leg_2_c2_l1`)
@@ -34,12 +39,12 @@ A high-performance Autodesk Fusion 360 add-in that exports assemblies and nested
      - `{type}_{level}` [Legacy Sequential] (e.g. `revolute_1`, `revolute_1A`)
      - Custom Pattern with placeholders `{branch_name}`, `{chain}`, `{level}`, `{type}`.
 
-5. **Separate Visual & Collision Meshes**:
+6. **Separate Visual & Collision Meshes**:
    - Visual mesh exported in `meshes/visual/<link>.stl` at user-selected quality (**Low**, **Medium**, or **High**).
    - Collision mesh exported in `meshes/collision/<link>.stl` at **Low** quality for fast simulation collision detection.
    - Multi-body links are exported as a combined binary STL with vertex coordinates scaled directly to meters ($1\text{ unit} = 1\text{ m}$).
 
-6. **High-Accuracy Inertial Calculations**:
+7. **High-Accuracy Inertial Calculations**:
    - Computes mass, center of mass, and 3D rotational inertia tensors using Fusion 360's `HighCalculationAccuracy`.
    - Uses the **Parallel Axis Theorem** to combine multi-body inertia tensors around the combined center of mass:
      $$I_{total} = \sum_i \left[ I_i + m_i \left( (\mathbf{d}_i \cdot \mathbf{d}_i)\mathbf{I}_{3\times 3} - \mathbf{d}_i \mathbf{d}_i^T \right) \right]$$
@@ -124,7 +129,16 @@ To ensure smooth and accurate URDF generation, follow these modeling conventions
 - **Joint Origin Anchor**:
   - The origin point `(0, 0, 0)` of the Joint Origin defines the exact joint origin `xyz` offset in the URDF.
 
-### 3. Rigid Groups vs Rigid Joints
+### 3. End-Effectors & Reference Frames
+- **Standalone Joint Origins Exported**:
+  - Any **Joint Origin that is NOT part of a joint** is automatically exported as a **fixed joint** connecting the link containing it to a clean virtual child link (omitting visual, collision, and inertial blocks per ROS standard).
+  - Use this for end-effectors, Tool Center Points (TCP), gripper touchpoints, camera frames, and IMU mount positions.
+- **Exclusion Rule (`_exclude`)**:
+  - If you created construction or modeling Joint Origins that should NOT appear in the URDF, append `_exclude` to their name (case-insensitive, e.g. `Origin_exclude`, `RefPoint_EXCLUDE`).
+- **Preserved CAD Names**:
+  - End-effector joints keep their explicit user-defined CAD names (e.g. `tcp_joint`) rather than being renamed by branch/chain templates.
+
+### 4. Rigid Groups vs Rigid Joints
 - **Rigid Groups**:
   - Components and bodies grouped via Fusion 360 **Rigid Groups** (`adsk.fusion.RigidGroups`) are automatically merged into their parent link as a single combined rigid body.
   - Their visual and collision meshes are aggregated, and their mass, center of mass, and inertia tensors are computed via the parallel axis theorem.
@@ -140,10 +154,14 @@ To ensure smooth and accurate URDF generation, follow these modeling conventions
 3. In the toolbar, click **Export URDF** (in the *Scripts and Add-Ins* panel under the *Solid* tab).
 4. In the dialog:
    - **Robot Name**: Name of your robot (defaults to the root component name).
+   - **Root Component**: (Optional) Select base occurrence, or leave blank to auto-detect grounded part.
+   - **URDF Base Origin**: (Optional) Select Joint Origin for base link (0,0,0) frame.
    - **Export Directory**: Displays the current destination folder.
-   - **Browse in Explorer...**: Click the **Select Folder in Explorer...** button to visually pick your export directory without manual typing.
+   - **Browse...**: Click the **Browse...** button to select your folder in Windows Explorer.
    - **Visual Mesh Quality**: Select `Low`, `Medium`, or `High`.
-   - **Open folder in Explorer when done**: Checkbox to automatically open the generated files in Windows Explorer upon completion.
+   - **Joint Naming Convention**: Select preset or enter custom naming template.
+   - **Skip Invisible Meshes**: Checked by default for fast kinematic testing.
+   - **Open in Explorer**: Automatically opens the exported folder when complete.
 5. Click **OK**.
 6. The exporter will generate:
    ```
@@ -164,4 +182,4 @@ Run the test suite using Python:
 ```bash
 python -m unittest discover -s tests -v
 ```
-All 10 unit and integration tests validate naming conventions, rigid group merging, RPY matrix math, binary STL generation, and end-to-end XML generation.
+All 51 automated unit and integration tests validate naming conventions, rigid group merging, RPY matrix math, binary STL generation, end-effector export, and end-to-end XML generation.

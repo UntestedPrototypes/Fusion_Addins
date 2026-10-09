@@ -121,9 +121,53 @@ class KinematicTreeBuilder:
             self.links.append(link)
             self._link_map[path] = link
 
+        # Create virtual links for standalone end-effector JointOrigins
+        for ji in self.joint_infos:
+            if getattr(ji, 'is_end_effector', False):
+                raw_name = getattr(ji, 'name', '') or 'ee'
+                if raw_name.endswith('_joint'):
+                    raw_name = raw_name[:-6]
+                link_name = self._sanitize_link_name(raw_name)
+                if link_name in used_names:
+                    base_str = link_name[:-5] if link_name.endswith('_link') else link_name
+                    k = 2
+                    while f"{base_str}_{k}_link" in used_names:
+                        k += 1
+                    link_name = f"{base_str}_{k}_link"
+                used_names.add(link_name)
+
+                virtual_link = URDFLink(link_name)
+                virtual_link.is_virtual = True
+                virtual_link.bodies = []
+                virtual_link.frame_world_transform = list(ji.world_frame_cm) if ji.world_frame_cm else None
+                self.links.append(virtual_link)
+                self._link_map[ji.child_link_path] = virtual_link
+
     def _create_joints(self):
         """Map JointInfo into URDFJoint, redirecting merged paths to their survivor link."""
         for ji in self.joint_infos:
+            # Handle standalone end-effector joints
+            if getattr(ji, 'is_end_effector', False):
+                parent_node = self._resolve_unmerged_node(ji.parent_link_path)
+                parent_link = self._link_map.get(parent_node.full_path) if parent_node else self._link_map.get('base_link')
+                child_link = self._link_map.get(ji.child_link_path)
+
+                if not parent_link or not child_link:
+                    continue
+
+                joint = URDFJoint(name=ji.name, joint_type='fixed')
+                joint.parent_link = parent_link.name
+                joint.child_link = child_link.name
+                joint.origin_xyz = list(ji.origin_xyz)
+                joint.origin_rpy = list(ji.origin_rpy)
+                joint.axis = list(ji.axis)
+                joint.depth = (parent_node.depth + 1) if parent_node else 1
+                joint.limits = {}
+                joint._joint_info = ji
+                joint.is_end_effector = True
+                self.joints.append(joint)
+                continue
+
             # Resolve actual un-merged parent and child nodes
             parent_node = self._resolve_unmerged_node(ji.parent_link_path)
             child_node = self._resolve_unmerged_node(ji.child_link_path)
@@ -325,12 +369,15 @@ class KinematicTreeBuilder:
         # -------------------------------------------------------------
         # 1. Topological Chain & Level Discovery
         # -------------------------------------------------------------
+        kinematic_joints = [j for j in self.joints if not getattr(j, 'is_end_effector', False)]
+        ee_joints = [j for j in self.joints if getattr(j, 'is_end_effector', False)]
+
         children_joints = {}
-        for j in self.joints:
+        for j in kinematic_joints:
             children_joints.setdefault(j.parent_link, []).append(j)
 
-        child_link_names = {j.child_link for j in self.joints}
-        base_link_name = 'base_link' if any(j.parent_link == 'base_link' for j in self.joints) else None
+        child_link_names = {j.child_link for j in kinematic_joints}
+        base_link_name = 'base_link' if any(j.parent_link == 'base_link' for j in kinematic_joints) else None
         if not base_link_name:
             candidates = [l for l in children_joints if l not in child_link_names]
             base_link_name = candidates[0] if candidates else None
@@ -365,8 +412,8 @@ class KinematicTreeBuilder:
                     if nj not in visited_joints:
                         queue.append((nj, level + 1))
 
-        # Handle any remaining unvisited joints
-        unvisited = [j for j in self.joints if j not in visited_joints]
+        # Handle any remaining unvisited kinematic joints
+        unvisited = [j for j in kinematic_joints if j not in visited_joints]
         if unvisited:
             next_chain = len(root_joints) + 1
             for j in unvisited:
@@ -398,7 +445,7 @@ class KinematicTreeBuilder:
         # 3. Apply Naming Format
         # -------------------------------------------------------------
         used_names = set()
-        for joint in self.joints:
+        for joint in kinematic_joints:
             meta = joint_meta.get(joint, {'chain': 1, 'level': 1, 'branch_name': 'chain', 'disambig': ''})
             chain_num = meta['chain']
             level_num = meta['level']
@@ -439,13 +486,31 @@ class KinematicTreeBuilder:
             used_names.add(unique_name)
             joint.name = unique_name
 
+        # Preserve explicit names for end-effector joints
+        for joint in ee_joints:
+            clean_name = joint.name or "ee_joint"
+            clean_name = re.sub(r'[^a-zA-Z0-9_]', '_', clean_name).strip('_').lower()
+            if not clean_name:
+                clean_name = "ee_joint"
+            unique_name = clean_name
+            k = 2
+            while unique_name in used_names:
+                unique_name = f"{clean_name}_{k}"
+                k += 1
+            used_names.add(unique_name)
+            joint.name = unique_name
+
     def _apply_legacy_naming_convention(self):
         """Legacy sequential naming by child link depth: revolute_1, revolute_2, revolute_1A, etc."""
+        kinematic_joints = [j for j in self.joints if not getattr(j, 'is_end_effector', False)]
+        ee_joints = [j for j in self.joints if getattr(j, 'is_end_effector', False)]
+
         depth_groups = {}
-        for joint in self.joints:
+        for joint in kinematic_joints:
             depth_groups.setdefault(joint.depth, []).append(joint)
 
         type_counters = {}
+        used_names = set()
         for depth in sorted(depth_groups.keys()):
             joints_at_depth = depth_groups[depth]
             by_type = {}
@@ -457,11 +522,28 @@ class KinematicTreeBuilder:
                 type_counters[jtype] = counter
 
                 if len(jlist) == 1:
-                    jlist[0].name = f"{jtype}_{counter}"
+                    jname = f"{jtype}_{counter}"
+                    jlist[0].name = jname
+                    used_names.add(jname)
                 else:
                     for idx, j in enumerate(jlist):
                         suffix = chr(ord('A') + idx)
-                        j.name = f"{jtype}_{counter}{suffix}"
+                        jname = f"{jtype}_{counter}{suffix}"
+                        j.name = jname
+                        used_names.add(jname)
+
+        for joint in ee_joints:
+            clean_name = joint.name or "ee_joint"
+            clean_name = re.sub(r'[^a-zA-Z0-9_]', '_', clean_name).strip('_').lower()
+            if not clean_name:
+                clean_name = "ee_joint"
+            unique_name = clean_name
+            k = 2
+            while unique_name in used_names:
+                unique_name = f"{clean_name}_{k}"
+                k += 1
+            used_names.add(unique_name)
+            joint.name = unique_name
 
     def _sanitize_link_name(self, raw_name):
         """Clean occurrence name into a valid, readable URDF link identifier."""

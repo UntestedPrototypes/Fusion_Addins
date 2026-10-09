@@ -5,6 +5,7 @@ and joint-origin based joint geometries.
 """
 
 import math
+import re
 from config.defaults import (
     CM_TO_M, M_TO_CM,
     DEFAULT_REVOLUTE_LIMITS,
@@ -38,6 +39,34 @@ except ImportError:
     HAS_ADSK = False
 
 
+def get_joint_origin_key(jo, occ=None):
+    """Return a unique, hashable string identifier for a JointOrigin to avoid TypeError on unhashable C++ objects."""
+    if jo is None:
+        return None
+    try:
+        tok = getattr(jo, 'entityToken', None)
+        if tok:
+            return f"token::{tok}"
+    except Exception:
+        pass
+    try:
+        nat = getattr(jo, 'nativeObject', None)
+        if nat is not None:
+            nat_tok = getattr(nat, 'entityToken', None)
+            if nat_tok:
+                return f"token::{nat_tok}"
+    except Exception:
+        pass
+    try:
+        name = getattr(jo, 'name', '') or ''
+        occ_ctx = getattr(jo, 'assemblyContext', None) or occ
+        occ_path = getattr(occ_ctx, 'fullPathName', 'root') if occ_ctx else 'root'
+        return f"name::{name.strip().lower()}::{occ_path}"
+    except Exception:
+        pass
+    return f"id::{id(jo)}"
+
+
 class JointInfo:
     """Encapsulates analyzed kinematic joint data ready for URDF generation."""
     def __init__(self, **kwargs):
@@ -55,6 +84,7 @@ class JointInfo:
         self.limit_velocity = kwargs.get('limit_velocity', DEFAULT_VELOCITY)
         self.geometry_source = kwargs.get('geometry_source', "direct")     # 'direct' | 'sketch' | 'joint_origin' | 'as_built'
         self.depth = kwargs.get('depth', 0)
+        self.is_end_effector = kwargs.get('is_end_effector', False)
 
     def __repr__(self):
         return f"<JointInfo '{self.name}' type={self.joint_type} parent='{self.parent_link_path}' child='{self.child_link_path}'>"
@@ -62,12 +92,14 @@ class JointInfo:
 
 class JointAnalyzer:
     """Analyzes Fusion 360 joints and maps them to URDF joint representations."""
-    def __init__(self, root_component):
+    def __init__(self, root_component, tree_nodes=None):
         self.root = root_component
+        self.tree_nodes = tree_nodes
         self.warnings = []
 
-    def analyze_all(self):
-        """Analyze all non-rigid standard joints and as-built joints."""
+    def analyze_all(self, selected_base_origin=None):
+        """Analyze joints made between two JointOrigin features (including rigid joints)
+        and export standalone JointOrigins as fixed end-effectors."""
         joints_info = []
 
         all_joints = []
@@ -102,6 +134,97 @@ class JointAnalyzer:
         except (RuntimeError, Exception):
             pass
 
+        # Also search subcomponents for joints if no assembly-level collection
+        if not has_assembly_joints and self.tree_nodes:
+            for path, node in self.tree_nodes.items():
+                if path == 'root' or not node.component:
+                    continue
+                for attr in ('joints', 'asBuiltJoints'):
+                    try:
+                        j_coll = getattr(node.component, attr, None)
+                        if j_coll:
+                            for j in j_coll:
+                                if j not in all_joints:
+                                    all_joints.append(j)
+                    except Exception:
+                        pass
+
+        # 1. Track used JointOrigins using string keys to avoid unhashable C++ objects
+        used_origin_keys = set()
+        used_origin_names = set()
+
+        def mark_origin_used(orig, occ_ctx=None):
+            if orig is None:
+                return
+            key = get_joint_origin_key(orig, occ_ctx)
+            if key:
+                used_origin_keys.add(key)
+            try:
+                nat = getattr(orig, 'nativeObject', None)
+                if nat is not None:
+                    n_key = get_joint_origin_key(nat, occ_ctx)
+                    if n_key:
+                        used_origin_keys.add(n_key)
+            except Exception:
+                pass
+            try:
+                tok = getattr(orig, 'entityToken', None)
+                if tok:
+                    used_origin_keys.add(f"token::{tok}")
+            except Exception:
+                pass
+            try:
+                r_name = getattr(orig, 'name', None)
+                if r_name:
+                    clean_n = r_name.strip().lower()
+                    occ_target = getattr(orig, 'assemblyContext', None) or occ_ctx
+                    occ_path = getattr(occ_target, 'fullPathName', 'root') if occ_target else 'root'
+                    used_origin_names.add((clean_n, occ_path))
+                    used_origin_keys.add(f"name::{clean_n}::{occ_path}")
+            except Exception:
+                pass
+
+        if selected_base_origin is not None:
+            mark_origin_used(selected_base_origin)
+            s_name = getattr(selected_base_origin, 'name', None)
+            if s_name:
+                used_origin_names.add(s_name.strip().lower())
+
+        for joint in all_joints:
+            try:
+                if getattr(joint, 'isSuppressed', False):
+                    continue
+            except (RuntimeError, Exception):
+                continue
+
+            ref1 = None
+            occ1 = None
+            try:
+                ref1 = getattr(joint, 'geometryOrOriginOne', None)
+            except (RuntimeError, Exception):
+                pass
+            try:
+                occ1 = getattr(joint, 'occurrenceOne', None)
+            except (RuntimeError, Exception):
+                pass
+
+            ref2 = None
+            occ2 = None
+            try:
+                ref2 = getattr(joint, 'geometryOrOriginTwo', None)
+            except (RuntimeError, Exception):
+                pass
+            try:
+                occ2 = getattr(joint, 'occurrenceTwo', None)
+            except (RuntimeError, Exception):
+                pass
+
+            if self._is_joint_origin(ref1):
+                mark_origin_used(ref1, occ1)
+            if self._is_joint_origin(ref2):
+                mark_origin_used(ref2, occ2)
+
+        # 2. Extract active joints made between two JointOrigins
         for joint in all_joints:
             # Safely check if joint is suppressed, catching Fusion C++ InternalValidationErrors
             try:
@@ -127,6 +250,13 @@ class JointAnalyzer:
                     joints_info.append(info)
             except (RuntimeError, Exception):
                 pass
+
+        # 3. Discover and append standalone JointOrigins as fixed end-effectors
+        standalone_infos = self._find_standalone_joint_origins(
+            used_origin_keys=used_origin_keys,
+            used_origin_names=used_origin_names
+        )
+        joints_info.extend(standalone_infos)
 
         return joints_info
 
@@ -261,6 +391,130 @@ class JointAnalyzer:
             return False
 
         return self._is_joint_origin(ref_one) and self._is_joint_origin(ref_two)
+
+    def _find_standalone_joint_origins(self, used_origin_keys, used_origin_names):
+        """Find any JointOrigins not part of a joint, excluding those ending with '_exclude',
+        and format them as fixed end-effector joints.
+        """
+        candidate_origins = []  # list of (jo, occ)
+
+        # 1. Try allJointOrigins on rootComponent (proxies with assemblyContext)
+        try:
+            all_jo = getattr(self.root, 'allJointOrigins', None)
+            if all_jo:
+                for jo in all_jo:
+                    occ = getattr(jo, 'assemblyContext', None)
+                    candidate_origins.append((jo, occ))
+        except Exception:
+            pass
+
+        # 2. Try rootComponent.jointOrigins (native JointOrigins in root)
+        try:
+            root_jos = getattr(self.root, 'jointOrigins', None)
+            if root_jos:
+                for jo in root_jos:
+                    candidate_origins.append((jo, None))
+        except Exception:
+            pass
+
+        # 3. Check tree_nodes if available
+        if self.tree_nodes:
+            for path, node in self.tree_nodes.items():
+                if path == 'root' or not node.component:
+                    continue
+                try:
+                    c_jos = getattr(node.component, 'jointOrigins', None)
+                    if c_jos:
+                        for jo in c_jos:
+                            candidate_origins.append((jo, node.occurrence))
+                except Exception:
+                    pass
+
+        standalone_infos = []
+        seen_keys = set()
+
+        for jo, fallback_occ in candidate_origins:
+            if jo is None:
+                continue
+
+            raw_name = getattr(jo, 'name', '') or ''
+            clean_name_lower = raw_name.strip().lower()
+
+            # Filter: Exclude if name ends with '_exclude' (case-insensitive)
+            if clean_name_lower.endswith('_exclude'):
+                continue
+
+            # Filter: Check if used in any joint or selected as base origin
+            jo_key = get_joint_origin_key(jo, fallback_occ)
+            if jo_key and jo_key in used_origin_keys:
+                continue
+
+            nat = getattr(jo, 'nativeObject', None)
+            if nat is not None:
+                nat_key = get_joint_origin_key(nat, fallback_occ)
+                if nat_key and nat_key in used_origin_keys:
+                    continue
+
+            tok = getattr(jo, 'entityToken', None)
+            if tok and f"token::{tok}" in used_origin_keys:
+                continue
+
+            occ = getattr(jo, 'assemblyContext', None) or fallback_occ
+            occ_path = getattr(occ, 'fullPathName', 'root') if occ else 'root'
+
+            if (clean_name_lower, occ_path) in used_origin_names:
+                continue
+            if occ_path == 'root' and clean_name_lower in used_origin_names:
+                continue
+            if f"name::{clean_name_lower}::{occ_path}" in used_origin_keys:
+                continue
+
+            # Deduplicate by (clean_name_lower, occ_path) and token/key
+            unique_key = (clean_name_lower, occ_path)
+            if unique_key in seen_keys:
+                continue
+            seen_keys.add(unique_key)
+            if jo_key:
+                seen_keys.add(jo_key)
+            if tok:
+                seen_keys.add(f"token::{tok}")
+
+            # Compute world frame
+            world_frame_cm = self._frame_from_joint_origin(jo, occ)
+            if world_frame_cm is None:
+                if hasattr(jo, 'transform') and jo.transform is not None:
+                    try:
+                        world_frame_cm = to_flat_matrix(jo.transform)
+                    except Exception:
+                        world_frame_cm = None
+
+            if world_frame_cm is None:
+                continue
+
+            # Format names
+            clean_name = re.sub(r'[^a-zA-Z0-9_]', '_', raw_name.strip()).strip('_').lower()
+            if not clean_name:
+                clean_name = 'ee'
+
+            joint_name = clean_name if clean_name.endswith('_joint') else f"{clean_name}_joint"
+            child_link_path = f"ee::{occ_path}::{clean_name}"
+
+            info = JointInfo(
+                name=joint_name,
+                joint_type=JOINT_TYPE_FIXED,
+                parent_link_path=occ_path,
+                child_link_path=child_link_path,
+                origin_xyz=[0.0, 0.0, 0.0],
+                origin_rpy=[0.0, 0.0, 0.0],
+                axis=[0.0, 0.0, 1.0],
+                world_frame_cm=world_frame_cm,
+                is_end_effector=True
+            )
+
+            self._compute_relative_transform(world_frame_cm, occ, info)
+            standalone_infos.append(info)
+
+        return standalone_infos
 
     def _is_sketch_based(self, ref):
         if ref is None:
@@ -478,15 +732,33 @@ class JointAnalyzer:
         except Exception:
             return False
 
+    def _get_motion_value(self, motion, attr):
+        """Read the joint's current position (rad or cm); 0 if unavailable."""
+        try:
+            return float(getattr(motion, attr, 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
+    def _pose_relative_limits(self, lims, current, scale, defaults):
+        """Convert Fusion joint limits to URDF limits.
+
+        Fusion measures min/max from the joint's zero position, but meshes and joint
+        frames are exported at the joint's current position (e.g. its rest angle),
+        which becomes URDF zero. Shift the limits by the current value to match.
+        Disabled limits fall back to the defaults.
+        """
+        lower = (lims.minimumValue - current) * scale if self._is_min_limit_enabled(lims) else defaults['lower']
+        upper = (lims.maximumValue - current) * scale if self._is_max_limit_enabled(lims) else defaults['upper']
+        return lower, upper
+
     def _extract_limits(self, motion, info):
         """Extract min/max limits for revolute and slider joints."""
         if info.joint_type in (JOINT_TYPE_REVOLUTE, JOINT_TYPE_CONTINUOUS):
             if hasattr(motion, 'rotationLimits') and motion.rotationLimits is not None:
-                lims = motion.rotationLimits
-                min_enabled = self._is_min_limit_enabled(lims)
-                max_enabled = self._is_max_limit_enabled(lims)
-                info.limit_lower = lims.minimumValue if min_enabled else DEFAULT_REVOLUTE_LIMITS['lower']
-                info.limit_upper = lims.maximumValue if max_enabled else DEFAULT_REVOLUTE_LIMITS['upper']
+                info.limit_lower, info.limit_upper = self._pose_relative_limits(
+                    motion.rotationLimits, self._get_motion_value(motion, 'rotationValue'),
+                    1.0, DEFAULT_REVOLUTE_LIMITS
+                )
             else:
                 info.limit_lower = DEFAULT_REVOLUTE_LIMITS['lower']
                 info.limit_upper = DEFAULT_REVOLUTE_LIMITS['upper']
@@ -495,12 +767,11 @@ class JointAnalyzer:
 
         elif info.joint_type == JOINT_TYPE_PRISMATIC:
             if hasattr(motion, 'slideLimits') and motion.slideLimits is not None:
-                lims = motion.slideLimits
-                min_enabled = self._is_min_limit_enabled(lims)
-                max_enabled = self._is_max_limit_enabled(lims)
                 # Fusion lengths are in cm -> convert to m
-                info.limit_lower = (lims.minimumValue * CM_TO_M) if min_enabled else DEFAULT_PRISMATIC_LIMITS['lower']
-                info.limit_upper = (lims.maximumValue * CM_TO_M) if max_enabled else DEFAULT_PRISMATIC_LIMITS['upper']
+                info.limit_lower, info.limit_upper = self._pose_relative_limits(
+                    motion.slideLimits, self._get_motion_value(motion, 'slideValue'),
+                    CM_TO_M, DEFAULT_PRISMATIC_LIMITS
+                )
             else:
                 info.limit_lower = DEFAULT_PRISMATIC_LIMITS['lower']
                 info.limit_upper = DEFAULT_PRISMATIC_LIMITS['upper']

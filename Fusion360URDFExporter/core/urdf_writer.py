@@ -35,23 +35,24 @@ class URDFWriter:
     def _add_link_element(self, parent_elem, link):
         link_elem = ET.SubElement(parent_elem, 'link', name=link.name)
 
-        # Inertial block
-        inertial = ET.SubElement(link_elem, 'inertial')
-        ET.SubElement(
-            inertial, 'origin',
-            xyz=f"{link.com[0]:.6f} {link.com[1]:.6f} {link.com[2]:.6f}",
-            rpy="0.000000 0.000000 0.000000"
-        )
-        ET.SubElement(inertial, 'mass', value=f"{link.mass:.6f}")
-        ET.SubElement(
-            inertial, 'inertia',
-            ixx=f"{link.inertia['ixx']:.8f}",
-            ixy=f"{link.inertia['ixy']:.8f}",
-            ixz=f"{link.inertia['ixz']:.8f}",
-            iyy=f"{link.inertia['iyy']:.8f}",
-            iyz=f"{link.inertia['iyz']:.8f}",
-            izz=f"{link.inertia['izz']:.8f}"
-        )
+        # Inertial block (omit for virtual / end-effector links)
+        if not getattr(link, 'is_virtual', False):
+            inertial = ET.SubElement(link_elem, 'inertial')
+            ET.SubElement(
+                inertial, 'origin',
+                xyz=f"{link.com[0]:.6f} {link.com[1]:.6f} {link.com[2]:.6f}",
+                rpy="0.000000 0.000000 0.000000"
+            )
+            ET.SubElement(inertial, 'mass', value=f"{link.mass:.6f}")
+            ET.SubElement(
+                inertial, 'inertia',
+                ixx=f"{link.inertia['ixx']:.8f}",
+                ixy=f"{link.inertia['ixy']:.8f}",
+                ixz=f"{link.inertia['ixz']:.8f}",
+                iyy=f"{link.inertia['iyy']:.8f}",
+                iyz=f"{link.inertia['iyz']:.8f}",
+                izz=f"{link.inertia['izz']:.8f}"
+            )
 
         # Visual block
         if link.visual_mesh_path:

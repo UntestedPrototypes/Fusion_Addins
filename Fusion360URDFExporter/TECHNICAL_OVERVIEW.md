@@ -103,7 +103,17 @@ Joints are topologically analyzed along kinematic chains originating from `base_
   - `{child_link}`: Name of moving child link
   - `{parent_link}`: Name of parent link
 
-### 3.3 Fast Batch Mesh Tessellation & Collision Reuse
+### 3.3 Standalone Joint Origins as End-Effectors (TCP) & Exclusion Convention
+* **Automatic End-Effector Export**:
+  - Any `JointOrigin` feature in the assembly that is **not part of a joint** is automatically exported as a **fixed joint** (`<joint type="fixed">`) connecting the link containing it to a virtual child `<link name="..."/>`.
+  - Virtual links omit `<inertial>`, `<visual>`, and `<collision>` blocks, creating completely clean reference frames per ROS standards.
+* **Exclusion Convention (`_exclude`)**:
+  - Any Joint Origin whose name ends with `_exclude` (case-insensitive, e.g. `RefPoint_exclude`, `Tool_EXCLUDE`) is skipped from export.
+  - Joint Origins used in any joint (revolute, prismatic, rigid) and the selected `baseOrigin` are also excluded from being exported as standalone end-effectors.
+* **Name Preservation**:
+  - End-effector joints retain their exact user-defined CAD names (e.g. `tcp_joint`, `camera_mount_joint`), bypassing branch/chain template renaming.
+
+### 3.4 Fast Batch Mesh Tessellation & Collision Reuse
 * **Single-Pass Leaf Occurrence Export**: BRep bodies are isolated and exported at their leaf occurrence level, preventing child subassemblies from bleeding into parent links.
 * **Instant Collision Mesh Reuse**: Visual STL meshes are instantly duplicated for collision meshes, cutting CAD mesh tessellation time by 50%.
 * **Skip Invisible Meshes (Enabled by Default)**: Allows rapid kinematic and joint frame validation in simulation without waiting for hundreds of complex CAD parts to tessellate.
@@ -144,8 +154,15 @@ Joints are topologically analyzed along kinematic chains originating from `base_
 - Integrated **Rigid Joints made between two Joint Origins as URDF `<joint type="fixed">`**, keeping child links separate.
 - Updated documentation across `README.md` and walkthrough artifacts.
 
-### Phase 7: Comprehensive Test Suite
+### Phase 7: Comprehensive Test Suite & Packaging
 - Built test suite with 48 automated test cases covering naming conventions, rigid merging, matrix math, binary STL generation, body isolation, visibility toggles, two-joint-origins filtering, and XML compliance.
+- Packaged clean release distributions with full documentation and PowerShell installer.
+
+### Phase 8: End-Effector Export & Exclusion Rule
+- Implemented automated discovery and export of standalone `JointOrigin` features as fixed joints and virtual links (`<link name="..."/>` without inertial/mesh blocks).
+- Added case-insensitive `_exclude` filter to skip auxiliary construction origins.
+- Preserved user-defined CAD names for end-effector joints during chain/level renaming.
+- Extended automated test suite to 51 test cases.
 
 ---
 

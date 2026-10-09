@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Exporting Bodies</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #2b2b2b;
+      color: #eaeaea;
+      padding: 18px 20px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      font-size: 13px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .spinner {
+      width: 26px;
+      height: 26px;
+      min-width: 26px;
+      border: 3px solid rgba(255, 255, 255, 0.15);
+      border-top-color: #0e86d4;
+      border-radius: 50%;
+      animation: spin 0.85s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .info {
+      flex: 1;
+      overflow: hidden;
+    }
+    .status-title {
+      font-weight: 600;
+      font-size: 14px;
+      color: #ffffff;
+      margin-bottom: 3px;
+    }
+    .status-detail {
+      font-size: 12px;
+      color: #a0a0a0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .progress-box {
+      width: 100%;
+      height: 14px;
+      background: #1e1e1e;
+      border-radius: 7px;
+      overflow: hidden;
+      box-shadow: inset 0 1px 3px rgba(0,0,0,0.5);
+      position: relative;
+    }
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background-color: #0e86d4;
+      background-image: linear-gradient(
+        45deg,
+        rgba(255, 255, 255, 0.25) 25%,
+        transparent 25%,
+        transparent 50%,
+        rgba(255, 255, 255, 0.25) 50%,
+        rgba(255, 255, 255, 0.25) 75%,
+        transparent 75%,
+        transparent
+      );
+      background-size: 24px 24px;
+      animation: progress-stripes 0.9s linear infinite;
+      transition: width 0.25s ease-out;
+      border-radius: 7px;
+    }
+    @keyframes progress-stripes {
+      from { background-position: 24px 0; }
+      to { background-position: 0 0; }
+    }
+    .progress-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: #888888;
+      margin-top: -4px;
+    }
+    .actions {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      margin-top: 2px;
+    }
+    button.cancel-btn {
+      background: #3e3e42;
+      color: #ffffff;
+      border: 1px solid #555555;
+      padding: 6px 18px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    button.cancel-btn:hover {
+      background: #c75050;
+      border-color: #e06060;
+    }
+    button.cancel-btn.cancelling {
+      background: #555555;
+      color: #bbbbbb;
+      border-color: #666666;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div id="spinner" class="spinner"></div>
+    <div class="info">
+      <div id="statusTitle" class="status-title">Exporting Bodies</div>
+      <div id="statusDetail" class="status-detail">Preparing export...</div>
+    </div>
+  </div>
+
+  <div class="progress-box">
+    <div id="progressBar" class="progress-bar"></div>
+  </div>
+
+  <div class="progress-labels">
+    <span id="progressCount">0 / 0 bodies</span>
+    <span id="progressPercent">0%</span>
+  </div>
+
+  <div class="actions">
+    <button id="cancelBtn" class="cancel-btn" onclick="onCancelClick()">Cancel Export</button>
+  </div>
+
+  <script>
+    let isCancelled = false;
+
+    function onCancelClick() {
+      if (isCancelled) return;
+      isCancelled = true;
+      const btn = document.getElementById('cancelBtn');
+      btn.innerText = 'Cancelling...';
+      btn.classList.add('cancelling');
+      btn.disabled = true;
+
+      const detail = document.getElementById('statusDetail');
+      detail.innerText = 'Cancellation requested. Finishing current body...';
+      detail.style.color = '#ff9800';
+
+      try {
+        if (typeof adsk !== 'undefined' && adsk.fusionSendData) {
+          var p = adsk.fusionSendData('cancel', '');
+          if (p && typeof p.then === 'function') {
+            p.then(function(res) {}).catch(function(e) {});
+          }
+        }
+      } catch (err) {
+        console.error('fusionSendData error:', err);
+      }
+    }
+
+    window.fusionJavaScriptHandler = {
+      handle: function (action, data) {
+        try {
+          if (action === 'update') {
+            const info = JSON.parse(data);
+            if (!isCancelled) {
+              document.getElementById('statusTitle').innerText = 'Exporting (' + info.current + ' of ' + info.total + ')';
+              document.getElementById('statusDetail').innerText = info.name;
+            }
+            document.getElementById('progressBar').style.width = info.pct + '%';
+            document.getElementById('progressCount').innerText = info.current + ' of ' + info.total + ' bodies';
+            document.getElementById('progressPercent').innerText = info.pct + '%';
+          }
+        } catch (e) {
+          console.error('Handle error:', e);
+        }
+        return 'OK';
+      }
+    };
+  </script>
+</body>
+</html>

@@ -13,6 +13,7 @@ from .transform_utils import (
     pure_matrix_multiply,
     IDENTITY_16
 )
+from .mesh_exporter import is_body_visible
 
 try:
     import adsk.core
@@ -25,6 +26,10 @@ except ImportError:
 class InertialCalculator:
     """Computes mass properties and aggregates inertia tensors for URDF links."""
 
+    def __init__(self, visible_only=False):
+        # When True, hidden bodies (or bodies in hidden components) are excluded
+        self.visible_only = visible_only
+
     def compute_link_inertial(self, link, link_world_transform=None):
         """Compute aggregate mass, CoM, and 3D inertia tensor for all bodies in a link.
         
@@ -32,7 +37,11 @@ class InertialCalculator:
             link (URDFLink): The link to calculate.
             link_world_transform (sequence or Matrix3D, optional): Transform of the link frame.
         """
-        if not link.bodies:
+        bodies = link.bodies
+        if self.visible_only:
+            bodies = [b for b in bodies if is_body_visible(b)]
+
+        if not bodies:
             # Massless / virtual link
             link.mass = 0.001
             link.com = [0.0, 0.0, 0.0]
@@ -49,7 +58,7 @@ class InertialCalculator:
         T_link = to_flat_matrix(link_world_transform)
         T_link_inv = pure_matrix_invert(T_link)
 
-        for body in link.bodies:
+        for body in bodies:
             occ = getattr(body, '_source_occ', getattr(body, 'assemblyContext', None))
             body_world = get_world_transform_as_list(occ) if occ else list(IDENTITY_16)
 
@@ -95,10 +104,13 @@ class InertialCalculator:
 
         try:
             acc = adsk.fusion.CalculationAccuracy.HighCalculationAccuracy
-            props = body.getPhysicalProperties(acc)
+            # Proxy bodies report mass properties in root/world space; use the
+            # native body so values are in component space, matching body_to_link.
+            native = getattr(body, 'nativeObject', None)
+            props = (native or body).getPhysicalProperties(acc)
 
             mass = props.mass  # kg
-            raw_com = props.centerOfMass  # Point3D in cm
+            raw_com = props.centerOfMass  # Point3D in cm, component space
 
             m = body_to_link or IDENTITY_16
             is_identity = (m == IDENTITY_16)
@@ -111,12 +123,19 @@ class InertialCalculator:
             else:
                 com_m = [raw_com.x * CM_TO_M, raw_com.y * CM_TO_M, raw_com.z * CM_TO_M]
 
-            # Inertia moments about CoM in kg*cm^2
+            # Moments are about the component origin (kg*cm^2); shift to the CoM
             res = props.getXYZMomentsOfInertia()
             if len(res) == 7:
                 _, ixx, iyy, izz, ixy, iyz, ixz = res
             else:
                 ixx, iyy, izz, ixy, iyz, ixz = res
+            cx, cy, cz = raw_com.x, raw_com.y, raw_com.z
+            ixx -= mass * (cy * cy + cz * cz)
+            iyy -= mass * (cx * cx + cz * cz)
+            izz -= mass * (cx * cx + cy * cy)
+            ixy += mass * cx * cy
+            iyz += mass * cy * cz
+            ixz += mass * cx * cz
 
             if not is_identity:
                 R = [
