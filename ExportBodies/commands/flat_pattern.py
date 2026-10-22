@@ -1,36 +1,25 @@
-"""Export Flat Patterns - exports sheet-metal flat patterns of the selected
-components (DXF), or the components themselves (IGES/STEP/SAT)."""
+"""Quick Flat Pattern Exporter - exports sheet-metal flat patterns of the
+selected components (DXF), or the components themselves (IGES/STEP/SAT).
+For flat patterns as part of export groups, use the Bodies Exporter's DXF format."""
 import os
-import stat
 import traceback
 
 import adsk.core
 import adsk.fusion
 
 from ..lib.common import app, ui, _handlers, _disable_ghosting, _safe_name
+from ..lib.flat_pattern_export import (_add_dxf_inputs, _dxf_options, _sheet_metal_components,
+                                       _ensure_file_writable, _export_flat_pattern)
 from ..lib.folders import _pick_output_folder
 from ..lib.naming import _add_naming_inputs, _resolve_affixes
 
 CMD_ID        = "ExportFlatPatternsCmd"
-CMD_NAME      = "Export Flat Patterns"
-CMD_TOOLTIP   = "Export sheet-metal flat patterns for selected components."
+CMD_NAME      = "Quick Flat Pattern Exporter"
+CMD_TOOLTIP   = "Quickly export sheet-metal flat patterns (DXF) for the selected components."
 CMD_RESOURCES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                              "resources", "flat_pattern")
 
 FORMATS = ("DXF", "IGES", "STEP", "SAT")
-
-
-# ---------------------------------------------------------------------------
-def _collect_components_recursive(root_comp, seen):
-    result = []
-    if root_comp.id in seen:
-        return result
-    seen.add(root_comp.id)
-    result.append(root_comp)
-    for occ in root_comp.occurrences:
-        child_comp = occ.component
-        result.extend(_collect_components_recursive(child_comp, seen))
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -61,10 +50,7 @@ class CreatedHandler(adsk.core.CommandCreatedEventHandler):
             for label in FORMATS:
                 fmt.listItems.add(label, label == "DXF")
 
-            grp_dxf = inputs.addGroupCommandInput("dxf_opts", "DXF Options")
-            grp_dxf.children.addBoolValueInput("bend_lines",  "Include bend lines",           True, "", True)
-            grp_dxf.children.addBoolValueInput("ext_lines",   "Include extent lines",         True, "", True)
-            grp_dxf.children.addBoolValueInput("spline_poly", "Convert splines to polylines", True, "", False)
+            _add_dxf_inputs(inputs)
 
             _add_naming_inputs(inputs)
 
@@ -106,92 +92,21 @@ class _InputChangedHandler(adsk.core.InputChangedEventHandler):
 
 
 # ---------------------------------------------------------------------------
-def _ensure_file_writable(filepath):
-    if not os.path.exists(filepath):
-        return
-    try:
-        os.chmod(filepath, stat.S_IWRITE | stat.S_IREAD)
-    except OSError:
-        pass
-    try:
-        with open(filepath, "r+b"):
-            pass
-    except OSError as e:
-        raise RuntimeError(
-            'Cannot overwrite "{}" because it is locked by another program.\n\n'
-            "System message: {}\n\nPlease close the file and try again.".format(
-                os.path.basename(filepath), e)
-        )
-    try:
-        os.remove(filepath)
-    except OSError as e:
-        raise RuntimeError(
-            'Cannot delete existing file "{}":\n{}'.format(os.path.basename(filepath), e)
-        )
-
-
-def _find_stationary_face(body):
-    best_by_axis    = None
-    best_large      = None
-    best_large_area = 0.0
-
-    for face in body.faces:
-        if face.geometry.surfaceType != adsk.core.SurfaceTypes.PlaneSurfaceType:
-            continue
-        ok, normal = face.evaluator.getNormalAtPoint(face.pointOnFace)
-        if not ok:
-            continue
-        az = abs(normal.z)
-        if az < 0.15:
-            continue
-        if az > 0.985 and best_by_axis is None:
-            best_by_axis = face
-        try:
-            area = face.area
-        except Exception:
-            area = 0.0
-        if area > best_large_area:
-            best_large_area = area
-            best_large      = face
-
-    return best_by_axis or best_large
-
-
-# ---------------------------------------------------------------------------
 class _ExecuteHandler(adsk.core.CommandEventHandler):
     def notify(self, args):
         try:
             _disable_ghosting()
             inputs = args.command.commandInputs
 
-            sel_input   = inputs.itemById("comp_selection")
-            recurse     = inputs.itemById("recurse").value
-            fmt         = inputs.itemById("format").selectedItem.name
-            bend_lines  = inputs.itemById("bend_lines").value
-            ext_lines   = inputs.itemById("ext_lines").value
-            spline_poly = inputs.itemById("spline_poly").value
+            sel_input = inputs.itemById("comp_selection")
+            recurse   = inputs.itemById("recurse").value
+            fmt       = inputs.itemById("format").selectedItem.name
+            dxf_opts  = _dxf_options(inputs)
 
             prefix, suffix = _resolve_affixes(inputs)
 
-            # ---- Resolve directly-selected components -----------------------
-            seen      = set()
-            top_level = []
-            for idx in range(sel_input.selectionCount):
-                entity = sel_input.selection(idx).entity
-                occ = adsk.fusion.Occurrence.cast(entity)
-                comp = occ.component if occ else adsk.fusion.Component.cast(entity)
-                if comp and comp.id not in seen:
-                    seen.add(comp.id)
-                    top_level.append(comp)
-
-            # ---- Optionally expand to sub-components ------------------------
-            if recurse:
-                recurse_seen = set()
-                components   = []
-                for comp in top_level:
-                    components.extend(_collect_components_recursive(comp, recurse_seen))
-            else:
-                components = top_level
+            entities = [sel_input.selection(i).entity for i in range(sel_input.selectionCount)]
+            sm_components, _ = _sheet_metal_components(entities, recurse)
 
             design = adsk.fusion.Design.cast(app.activeProduct)
             if not design:
@@ -199,9 +114,6 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
                 return
             export_mgr = design.exportManager
 
-            # ---- Build export queue -----------------------------------------
-            sm_components = [c for c in components
-                             if any(b.isSheetMetal for b in c.bRepBodies)]
             if not sm_components:
                 msg = ("None of the selected components (or their sub-components) "
                        "contain sheet-metal bodies."
@@ -214,6 +126,7 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
             if not export_path:
                 return
 
+            # ---- Build export queue -----------------------------------------
             export_queue = []
             name_count   = {}
             for comp in sm_components:
@@ -231,10 +144,10 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
                     name_count[base_name] = 0
 
                 out_file = os.path.join(export_path, "{}.{}".format(base_name, fmt.lower()))
-                export_queue.append((comp, base_name, out_file))
+                export_queue.append((comp, out_file))
 
             # ---- Overwrite warning ------------------------------------------
-            existing_files = [f for _, _, f in export_queue if os.path.exists(f)]
+            existing_files = [f for _, f in export_queue if os.path.exists(f)]
             if existing_files:
                 names_list = "\n".join("  " + os.path.basename(f) for f in existing_files)
                 answer = ui.messageBox(
@@ -251,9 +164,7 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
             exported = []
             skipped  = []
 
-            for comp, base_name, out_file in export_queue:
-                sm_bodies = [b for b in comp.bRepBodies if b.isSheetMetal]
-
+            for comp, out_file in export_queue:
                 try:
                     _ensure_file_writable(out_file)
                 except RuntimeError as lock_err:
@@ -262,39 +173,22 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
 
                 try:
                     if fmt == "DXF":
-                        fp = comp.flatPattern
-                        if fp is None:
-                            station_face = _find_stationary_face(sm_bodies[0])
-                            if station_face is None:
-                                skipped.append("{}: no flat pattern and no top/bottom face "
-                                               "found to create one".format(comp.name))
-                                continue
-                            try:
-                                fp = comp.createFlatPattern(station_face)
-                            except Exception:
-                                fp = None
-                            if fp is None:
-                                skipped.append("{}: flat pattern could not be created "
-                                               "automatically; please create it manually in "
-                                               "the Sheet Metal workspace.".format(comp.name))
-                                continue
-                        opts = export_mgr.createDXFFlatPatternExportOptions(out_file, fp)
-                        opts.isCenterLinesExported       = bend_lines
-                        opts.isExtentLinesExported       = ext_lines
-                        opts.isSplineConvertedToPolyline = spline_poly
-                    elif fmt == "IGES":
-                        opts = export_mgr.createIGESExportOptions(out_file, comp)
-                    elif fmt == "STEP":
-                        opts = export_mgr.createSTEPExportOptions(out_file, comp)
+                        ok = _export_flat_pattern(export_mgr, comp, out_file, *dxf_opts)
                     else:
-                        opts = export_mgr.createSATExportOptions(out_file, comp)
+                        if fmt == "IGES":
+                            opts = export_mgr.createIGESExportOptions(out_file, comp)
+                        elif fmt == "STEP":
+                            opts = export_mgr.createSTEPExportOptions(out_file, comp)
+                        else:
+                            opts = export_mgr.createSATExportOptions(out_file, comp)
+                        ok = export_mgr.execute(opts)
 
-                    if export_mgr.execute(opts):
+                    if ok:
                         exported.append(os.path.basename(out_file))
                     else:
                         skipped.append("{}: execute() returned False".format(comp.name))
                 except Exception as ex:
-                    skipped.append("{}: export error: {}".format(comp.name, ex))
+                    skipped.append("{}: {}".format(comp.name, ex))
 
             # ---- Summary ----------------------------------------------------
             parts = []

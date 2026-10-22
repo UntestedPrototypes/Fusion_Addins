@@ -4,8 +4,9 @@ These addons and guide were AI generated. It covers Three add-ins for Autodesk F
 
 | Add-in | What it does |
 |---|---|
-| **Bodies Exporter** | Exports groups of components/bodies - per group as separate files (STEP, STL, 3MF, OBJ, IGES, SAT) or combined into one file (STEP, IGES, SAT) |
-| **Export Flat Patterns** | Exports sheet-metal flat patterns from selected components to DXF, IGES, STEP, or SAT (part of the ExportBodies add-in) |
+| **Bodies Exporter** | Exports groups of components/bodies - per group as separate files (STEP, STL, 3MF, OBJ, IGES, SAT, or DXF flat patterns) or combined into one file (STEP, IGES, SAT) |
+| **Quick Bodies Exporter** | Exports the current selection straight away as separate files or one combined file, without groups |
+| **Quick Flat Pattern Exporter** | Quickly exports sheet-metal flat patterns from selected components to DXF (or the components to IGES, STEP, SAT) |
 | **HoleToSlot** | Creates a slot from a hole perpendicular to a reference edge. Used to add tolerances. |
 | **Fusion360KinematicsExporter** | Exports assemblies as URDF file. |
 ---
@@ -68,9 +69,10 @@ After copying, the directory should look like this:
 The add-ins' commands appear in the **Utilities** panel in the toolbar once running:
 
 - **Bodies Exporter**
-- **Export Flat Patterns**
+- **Quick Bodies Exporter**
+- **Quick Flat Pattern Exporter**
 
-Both are also listed under **Export** on the Flat Pattern toolbar, where the Utilities panel is not shown.
+All three are also listed under **Export** on the Flat Pattern toolbar, where the Utilities panel is not shown.
 
 If you do not see them, switch to the **Design** workspace -
 the Utilities panel is workspace-dependent.
@@ -85,11 +87,13 @@ keeps the assembly structure and positions.
 
 1. In the **Utilities** toolbar panel (or **Export** on the Flat Pattern toolbar), click **Bodies Exporter**.
 2. Select components and/or bodies - one selection box takes both. In the canvas a click usually picks a body; use the browser to pick components. Tick **Include sub-component bodies** to recurse into nested components.
-3. Under **Export Groups**, enter a **Group / File Name**, choose the **New Group Output** (Separate / Combined) and **New Group Format**, then click **Add Group**. Repeat for as many groups as you need. **Only the groups in the table are exported** - a selection that was not added as a group is ignored.
+3. Under **Export Groups**, enter a **Group / File Name**, choose the **New Group Output** (Separate / Combined) and **New Group Format**, then click **Add Group**. Repeat for as many groups as you need. **Only the ticked groups in the table are exported** - a selection that was not added as a group is ignored.
 4. Each row of the table can be changed afterwards:
+   - **Export** (first column, ticked by default) - untick a group to keep it in the list but skip it this time.
    - **Name** - the file name of a Combined group (and the subfolder name, see below).
    - **Output** - **Separate** (one file per body) or **Combined** (one file for the group).
-   - **Format** - Separate: 3MF, STEP, STL, OBJ, IGES, SAT. Combined: STEP, IGES, SAT.
+   - **Format** - Separate: 3MF, STEP, STL, OBJ, IGES, SAT, DXF. Combined: STEP, IGES, SAT.
+     **DXF** exports the sheet-metal **flat pattern** of each sheet-metal component in the group (one DXF per component, named after it; created automatically if missing). A **DXF Options** section (bend lines, extent lines, splines to polylines) appears while any group uses DXF.
    - **Subfolder** - Separate only, off by default: put the group's files in a subfolder named after the group.
    **Remove** / **Clear** drop groups.
 5. Choose which body types to include (**Solid**, **Surface**, **Sheet metal**) and whether to **Export only visible bodies**. Bodies you selected directly are always included. These settings apply to every group.
@@ -101,7 +105,7 @@ Separate groups export each body once, even if its component is used several tim
 
 **Name every body in STEP (slicer friendly)** (on by default, STEP only): slicers such as Bambu Studio name parts after the STEP *component*, so the bodies of a multi-body component show up as "Component-SOLID-1", "-SOLID-2". With this option each body becomes its own part named after the body ("Component_Body" inside sub-components). Geometry and positions are unchanged.
 
-**Remembered settings:** when you click **OK**, the groups (with their output, format and subfolder setting), filters, naming options and output folder are stored in the document. The next time you open the command in that document they are filled in again (save the document to keep them between sessions). Items that were deleted since are shown as "missing" in the group list. Groups saved by the older Combined Bodies Exporter load as Combined groups.
+**Remembered settings:** when you click **OK**, the groups (with their Export tick, output, format and subfolder setting), filters, naming options and output folder are stored in the document. The next time you open the command in that document they are filled in again (save the document to keep them between sessions). Items that were deleted since are shown as "missing" in the group list. Groups saved by the older Combined Bodies Exporter load as Combined groups.
 
 **Filename format:**
 
@@ -110,11 +114,23 @@ Separate groups export each body once, even if its component is used several tim
 
 ---
 
-## Using Export Flat Patterns
+## Using Quick Bodies Exporter
+
+The quick way when you just want to export what is selected, without setting up groups.
+
+1. Click **Quick Bodies Exporter** (Utilities, or Export on the Flat Pattern toolbar).
+2. Select components and/or bodies (tick **Include sub-component bodies** to recurse).
+3. Choose the **Output**: **Separate** (one file per body - 3MF, STEP, STL, OBJ, IGES, SAT, or DXF flat patterns) or **Combined** (one file - STEP, IGES, SAT, named by **File Name**).
+4. Body Types, Export Options and Naming Options work as in the Bodies Exporter.
+5. Click **OK** and choose the folder. The options (not the selection) are remembered per document.
+
+---
+
+## Using Quick Flat Pattern Exporter
 
 Installed with the ExportBodies add-in (it replaces the separate FlatPatternExporter add-in - stop and unlink the old one in **Scripts and Add-Ins** if it is still listed). It uses the same **Naming Options** (prefix, document name, suffix, milestone) and remembered output folder as the body exporters, and is also listed under **Export** on the Flat Pattern toolbar.
 
-1. In the **Utilities** toolbar panel, click **Export Flat Patterns**.
+1. In the **Utilities** toolbar panel, click **Quick Flat Pattern Exporter**.
 2. **Select** one or more sheet-metal component occurrences from the canvas or browser.
 3. Optionally tick **Include sub-components (recursive)** to also process nested sheet-metal components.
 4. Choose a **File format** (DXF, IGES, STEP, SAT).

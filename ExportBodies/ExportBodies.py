@@ -8,16 +8,17 @@ import traceback
 import adsk.core
 
 from .lib import (common, naming, selection, folders, step_post, doc_state,
-                  export_separate, export_combined)
-from .commands import export_bodies, flat_pattern
+                  export_separate, export_combined, flat_pattern_export, export_runner)
+from .commands import export_bodies, quick_export, flat_pattern
 
 # Fusion keeps submodules cached when the add-in is stopped and started again,
 # so reload them (dependencies first) to pick up code changes without a restart.
 for _module in (common, naming, selection, folders, step_post, doc_state,
-                export_separate, export_combined, export_bodies, flat_pattern):
+                export_separate, export_combined, flat_pattern_export, export_runner,
+                export_bodies, quick_export, flat_pattern):
     importlib.reload(_module)
 
-COMMANDS = (export_bodies, flat_pattern)
+COMMANDS = (export_bodies, quick_export, flat_pattern)
 
 # Buttons of commands that were merged away (removed if still registered)
 LEGACY_CMD_IDS = ("ExportCombinedCmd",)
