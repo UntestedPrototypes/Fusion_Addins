@@ -4,6 +4,6 @@
   "id": "ExportBodiesAddin",
   "author": "Autodesk Assistant",
   "description": { "": "Bodies export (separate or combined per group), slicer-friendly STEP naming, and sheet-metal flat pattern export" },
-  "version": "9.2.0",
+  "version": "9.4.0",
   "runOnStartup": false
 }

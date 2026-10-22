@@ -3,6 +3,8 @@ as one file, keeping every component instance in its place."""
 import adsk.core
 import adsk.fusion
 
+from .common import _as_component, _child_occurrences
+
 
 def _collect_combined(node, want_solid, want_surf, want_sm, visible_only, recurse,
                       keep, skipped, seen_keys):
@@ -47,8 +49,8 @@ def _collect_combined(node, want_solid, want_surf, want_sm, visible_only, recurs
         keep.append(proxy_body)
 
     if recurse:
-        occs = node.childOccurrences if occ else node.occurrences
-        for j in range(occs.count):
+        occs = _child_occurrences(node)
+        for j in range(occs.count if occs else 0):
             sub_occ = occs.item(j)
             if sub_occ:
                 _collect_combined(sub_occ, want_solid, want_surf, want_sm, visible_only,
@@ -78,7 +80,7 @@ def _gather_group_bodies(entities, want_solid, want_surf, want_sm, visible_only,
                 comp_name = native_body.parentComponent.name
             else:
                 occ  = adsk.fusion.Occurrence.cast(entity)
-                node = occ if occ else adsk.fusion.Component.cast(entity)
+                node = occ if occ else _as_component(entity)
                 if not node:
                     continue
                 comp_name = occ.component.name if occ else node.name
@@ -102,17 +104,20 @@ def _save_and_isolate_many(design, keep):
     root = design.rootComponent
     snapshot = {"bodies": [], "occs": [], "folders": []}
 
-    for c in range(design.allComponents.count):
-        comp = design.allComponents.item(c)
-        snapshot["folders"].append((comp, comp.isBodiesFolderLightBulbOn))
+    comps = [design.allComponents.item(c) for c in range(design.allComponents.count)]
+    if not adsk.fusion.Component.cast(root):
+        comps.append(root)       # flat pattern: its bodies live on the FlatPattern
+    for comp in comps:
+        if hasattr(comp, "isBodiesFolderLightBulbOn"):
+            snapshot["folders"].append((comp, comp.isBodiesFolderLightBulbOn))
         bodies = comp.bRepBodies
         for i in range(bodies.count):
             body = bodies.item(i)
             snapshot["bodies"].append((body, body.isLightBulbOn))
             body.isLightBulbOn = False
 
-    all_occs = root.allOccurrences
-    for i in range(all_occs.count):
+    all_occs = getattr(root, "allOccurrences", None)
+    for i in range(all_occs.count if all_occs else 0):
         occ = all_occs.item(i)
         snapshot["occs"].append((occ, occ.isLightBulbOn))
         occ.isLightBulbOn = False
@@ -120,7 +125,10 @@ def _save_and_isolate_many(design, keep):
     for proxy_body in keep:
         native_body = proxy_body.nativeObject if proxy_body.assemblyContext else proxy_body
         native_body.isLightBulbOn = True
-        native_body.parentComponent.isBodiesFolderLightBulbOn = True
+        try:
+            native_body.parentComponent.isBodiesFolderLightBulbOn = True
+        except Exception:
+            pass
         occ = proxy_body.assemblyContext
         while occ:
             occ.isLightBulbOn = True

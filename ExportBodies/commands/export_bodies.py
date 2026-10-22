@@ -11,7 +11,8 @@ from ..lib.doc_state import _entity_ref, _resolve_entity_ref, _read_state, _writ
 from ..lib.export_runner import (SEPARATE, COMBINED, MODES, FORMAT_INFO, MODE_FORMATS,
                                  DEFAULT_FORMAT, _run_export)
 from ..lib.naming import _add_naming_inputs, _split_doc_name
-from ..lib.selection import _add_selection_inputs, _add_body_type_inputs
+from ..lib.selection import (_add_selection_inputs, _add_body_type_inputs,
+                             _add_canvas_body_picks, _apply_canvas_body_picks)
 from ..lib.step_post import _add_split_bodies_input
 from ..lib.flat_pattern_export import _add_dxf_inputs, DXF_BOOL_IDS
 
@@ -130,6 +131,9 @@ class CreatedHandler(adsk.core.CommandCreatedEventHandler):
             cmd.inputChanged.add(h_in)
             _handlers.append(h_in)
 
+            # Canvas clicks select bodies, browser clicks select components
+            _add_canvas_body_picks(cmd, _handlers)
+
             h_destroy = _DestroyHandler()
             cmd.destroy.add(h_destroy)
             _handlers.append(h_destroy)
@@ -142,6 +146,7 @@ class _ValidateHandler(adsk.core.ValidateInputsEventHandler):
     def notify(self, args):
         try:
             inputs = args.inputs
+            _apply_canvas_body_picks(inputs)
             solid  = inputs.itemById("chk_solid").value
             surf   = inputs.itemById("chk_surface").value
             sm     = inputs.itemById("chk_sheetmetal").value
@@ -349,9 +354,9 @@ def _load_state(inputs):
     saved_groups = state.get("groups", [])
     if saved_groups:
         root = design.rootComponent
-        all_occs = root.allOccurrences
+        all_occs = getattr(root, "allOccurrences", None)   # none in a flat pattern
         occ_by_path = {all_occs.item(i).fullPathName: all_occs.item(i)
-                       for i in range(all_occs.count)}
+                       for i in range(all_occs.count if all_occs else 0)}
         table = inputs.itemById("tbl_groups")
         for g in saved_groups:
             entities = []

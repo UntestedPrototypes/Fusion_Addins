@@ -3,22 +3,37 @@
 Commands live in commands/ (one module each), shared building blocks in lib/.
 """
 import importlib
+import json
+import os
 import traceback
 
 import adsk.core
 
 from .lib import (common, naming, selection, folders, step_post, doc_state,
-                  export_separate, export_combined, flat_pattern_export, export_runner)
+                  export_separate, export_combined, flat_pattern_export, temp_doc_export,
+                  export_runner)
 from .commands import export_bodies, quick_export, flat_pattern
 
 # Fusion keeps submodules cached when the add-in is stopped and started again,
 # so reload them (dependencies first) to pick up code changes without a restart.
 for _module in (common, naming, selection, folders, step_post, doc_state,
-                export_separate, export_combined, flat_pattern_export, export_runner,
+                export_separate, export_combined, flat_pattern_export, temp_doc_export,
+                export_runner,
                 export_bodies, quick_export, flat_pattern):
     importlib.reload(_module)
 
 COMMANDS = (export_bodies, quick_export, flat_pattern)
+
+
+def _addin_version():
+    """Version from the manifest, shown in the tooltips so the running build
+    can be told apart after an update."""
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ExportBodies.manifest")
+        with open(path, encoding="utf-8") as f:
+            return json.load(f).get("version", "?")
+    except Exception:
+        return "?"
 
 # Buttons of commands that were merged away (removed if still registered)
 LEGACY_CMD_IDS = ("ExportCombinedCmd",)
@@ -38,11 +53,13 @@ def run(context):
         for cmd_id in LEGACY_CMD_IDS:
             _remove_command(ui, cmd_id)
 
+        version = _addin_version()
         cmd_defs = []
         for cmd in COMMANDS:
             _remove_command(ui, cmd.CMD_ID)
             cmd_def = ui.commandDefinitions.addButtonDefinition(
-                cmd.CMD_ID, cmd.CMD_NAME, cmd.CMD_TOOLTIP,
+                cmd.CMD_ID, cmd.CMD_NAME,
+                "{}\n\nExportBodies v{}".format(cmd.CMD_TOOLTIP, version),
                 getattr(cmd, "CMD_RESOURCES", "")
             )
             h = cmd.CreatedHandler()

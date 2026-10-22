@@ -4,6 +4,8 @@ import json
 
 import adsk.fusion
 
+from .common import _as_component
+
 STATE_ATTR_GROUP = "UntestedPrototypes_ExportBodies"
 STATE_ATTR_NAME  = "combined_state"
 
@@ -20,7 +22,7 @@ def _entity_ref(entity):
     occ = adsk.fusion.Occurrence.cast(entity)
     if occ:
         return {"type": "occ", "path": occ.fullPathName, "token": occ.entityToken}
-    if adsk.fusion.Component.cast(entity):
+    if _as_component(entity):
         return {"type": "root"}
     return None
 

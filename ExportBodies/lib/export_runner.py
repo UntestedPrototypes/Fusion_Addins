@@ -13,6 +13,7 @@ from .flat_pattern_export import _sheet_metal_components, _export_flat_pattern, 
 from .folders import _pick_output_folder
 from .naming import _resolve_affixes
 from .step_post import _split_step_bodies
+from .temp_doc_export import _needs_temp_doc, _export_bodies_via_temp_doc
 
 SEPARATE = "Separate"
 COMBINED = "Combined"
@@ -195,14 +196,25 @@ def _run_export(inputs, design, specs):
                     continue
 
             try:
+                via_temp_doc = _needs_temp_doc(design, job["fmt"])
                 if job["kind"] == COMBINED:
-                    ok = _export_combined_file(design, job["keep"], path, job["fmt"])
+                    if via_temp_doc:
+                        ok = _export_bodies_via_temp_doc(job["keep"], path, job["fmt"], job["base"])
+                    else:
+                        ok = _export_combined_file(design, job["keep"], path, job["fmt"])
                 elif job["kind"] == "flat":
                     ok = _export_flat_pattern(design.exportManager, job["comp"], path, *dxf_opts)
+                elif via_temp_doc:
+                    body = job["comp"].bRepBodies.item(job["body_idx"])
+                    ok = _export_bodies_via_temp_doc([body], path, job["fmt"], job["body_name"])
                 else:
                     ok = _export_separate_body(design.exportManager, job["comp"],
                                                job["body_idx"], path, job["fmt"])
-                if ok:
+                if ok and not os.path.exists(path):
+                    # Seen when exporting from inside a flat pattern: execute()
+                    # returns True but nothing is written
+                    errors.append("{}: Fusion reported success but wrote no file".format(rel))
+                elif ok:
                     exported.setdefault(job["group"], []).append(rel)
                     if split_bodies and job["fmt"] == "step":
                         if progress:

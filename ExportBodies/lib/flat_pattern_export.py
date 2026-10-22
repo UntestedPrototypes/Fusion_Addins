@@ -6,20 +6,22 @@ import stat
 import adsk.core
 import adsk.fusion
 
+from .common import _as_component
+
 DXF_BOOL_IDS = ("bend_lines", "ext_lines", "spline_poly")
 
 
 def _add_dxf_inputs(inputs):
     grp_dxf = inputs.addGroupCommandInput("dxf_opts", "DXF Options (flat patterns)")
-    grp_dxf.children.addBoolValueInput("bend_lines",  "Include bend lines",           True, "", True)
-    grp_dxf.children.addBoolValueInput("ext_lines",   "Include extent lines",         True, "", True)
+    grp_dxf.children.addBoolValueInput("bend_lines",  "Include bend lines",           True, "", False)
+    grp_dxf.children.addBoolValueInput("ext_lines",   "Include extent lines",         True, "", False)
     grp_dxf.children.addBoolValueInput("spline_poly", "Convert splines to polylines", True, "", False)
     return grp_dxf
 
 
 def _dxf_options(inputs):
     """(bend_lines, ext_lines, spline_poly) from the DXF inputs, else defaults."""
-    defaults = {"bend_lines": True, "ext_lines": True, "spline_poly": False}
+    defaults = {"bend_lines": False, "ext_lines": False, "spline_poly": False}
     values = []
     for input_id in DXF_BOOL_IDS:
         inp = inputs.itemById(input_id)
@@ -33,7 +35,7 @@ def _collect_components_recursive(root_comp, seen):
         return result
     seen.add(root_comp.id)
     result.append(root_comp)
-    for occ in root_comp.occurrences:
+    for occ in (getattr(root_comp, "occurrences", None) or []):
         child_comp = occ.component
         result.extend(_collect_components_recursive(child_comp, seen))
     return result
@@ -57,7 +59,7 @@ def _sheet_metal_components(entities, recurse):
                 comp = native_body.parentComponent
             else:
                 occ = adsk.fusion.Occurrence.cast(entity)
-                comp = occ.component if occ else adsk.fusion.Component.cast(entity)
+                comp = occ.component if occ else _as_component(entity)
             if comp and comp.id not in seen:
                 seen.add(comp.id)
                 top_level.append((comp, bool(body)))

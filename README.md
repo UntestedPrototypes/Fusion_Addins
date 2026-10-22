@@ -86,7 +86,7 @@ either as **Separate** files (one file per body) or **Combined** into one file t
 keeps the assembly structure and positions.
 
 1. In the **Utilities** toolbar panel (or **Export** on the Flat Pattern toolbar), click **Bodies Exporter**.
-2. Select components and/or bodies - one selection box takes both. In the canvas a click usually picks a body; use the browser to pick components. Tick **Include sub-component bodies** to recurse into nested components.
+2. Select components and/or bodies - one selection box takes both: clicking in the **canvas** selects the **body** under the cursor, clicking in the **browser** tree selects the **component**. Tick **Include sub-component bodies** to recurse into nested components.
 3. Under **Export Groups**, enter a **Group / File Name**, choose the **New Group Output** (Separate / Combined) and **New Group Format**, then click **Add Group**. Repeat for as many groups as you need. **Only the ticked groups in the table are exported** - a selection that was not added as a group is ignored.
 4. Each row of the table can be changed afterwards:
    - **Export** (first column, ticked by default) - untick a group to keep it in the list but skip it this time.
@@ -100,6 +100,8 @@ keeps the assembly structure and positions.
 6. Optionally tick **Include component name in filename** and set the **Naming Options** (prefix, document name as prefix, suffix, milestone `V#` as suffix) - applied to every group.
 7. Click **OK** and choose the destination folder. It opens at the last folder you exported to, or your Documents folder the first time.
 8. If any files already exist you are asked once whether to overwrite them all. A summary lists the exported files per group and anything skipped.
+
+Bodies you create while editing a **flat pattern** can be exported too: run the exporter from **Export** on the Flat Pattern toolbar and select them there. Fusion cannot write STEP, IGES or SAT directly from a flat pattern, so for those formats the bodies are copied into a temporary document that briefly opens as a tab and is closed again without saving.
 
 Separate groups export each body once, even if its component is used several times. Combined groups keep every instance in its place. Everything not being exported is temporarily hidden during the export, then visibility is restored.
 
@@ -119,7 +121,7 @@ Separate groups export each body once, even if its component is used several tim
 The quick way when you just want to export what is selected, without setting up groups.
 
 1. Click **Quick Bodies Exporter** (Utilities, or Export on the Flat Pattern toolbar).
-2. Select components and/or bodies (tick **Include sub-component bodies** to recurse).
+2. Select bodies in the canvas and/or components in the browser tree (tick **Include sub-component bodies** to recurse).
 3. Choose the **Output**: **Separate** (one file per body - 3MF, STEP, STL, OBJ, IGES, SAT, or DXF flat patterns) or **Combined** (one file - STEP, IGES, SAT, named by **File Name**).
 4. Body Types, Export Options and Naming Options work as in the Bodies Exporter.
 5. Click **OK** and choose the folder. The options (not the selection) are remembered per document.

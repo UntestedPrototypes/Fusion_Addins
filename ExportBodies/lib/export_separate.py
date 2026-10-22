@@ -3,7 +3,7 @@ its own. Repeated instances of a component are exported once."""
 import adsk.core
 import adsk.fusion
 
-from .common import _safe_name
+from .common import _safe_name, _as_component, _child_occurrences
 
 
 # ---------------------------------------------------------------------------
@@ -14,8 +14,8 @@ def _hide_all_occs_recursive(comp, path, snapshot_occs):
     Uses a tuple path (comp.name, index, ...) as a stable key instead of
     entityToken, which is only valid for root-level proxies.
     """
-    occs = comp.occurrences
-    for i in range(occs.count):
+    occs = getattr(comp, "occurrences", None)   # none in a flat pattern
+    for i in range(occs.count if occs else 0):
         occ = occs.item(i)
         key = path + (i,)
         snapshot_occs[key] = occ.isLightBulbOn
@@ -44,8 +44,8 @@ def _restore(comp, snapshot):
             pass
     # Restore all occurrences at every depth using the same path-tuple keys
     def _restore_occs_recursive(c, path):
-        occs = c.occurrences
-        for i in range(occs.count):
+        occs = getattr(c, "occurrences", None)
+        for i in range(occs.count if occs else 0):
             occ = occs.item(i)
             key = path + (i,)
             if key in snapshot["occs"]:
@@ -124,8 +124,8 @@ def _collect_bodies(node, want_solid, want_surf, want_sm, visible_only, inc_comp
                          _base_name(comp, native_body, inc_comp, prefix, suffix)))
 
     if recurse:
-        occs = node.childOccurrences if adsk.fusion.Occurrence.cast(node) else node.occurrences
-        for j in range(occs.count):
+        occs = _child_occurrences(node)
+        for j in range(occs.count if occs else 0):
             sub_occ = occs.item(j)
             if sub_occ:
                 _collect_bodies(sub_occ, want_solid, want_surf, want_sm, visible_only, inc_comp,
@@ -164,7 +164,7 @@ def _plan_separate(entities, want_solid, want_surf, want_sm, visible_only, recur
                              _base_name(comp, native_body, inc_comp, prefix, suffix)))
             else:
                 occ  = adsk.fusion.Occurrence.cast(entity)
-                node = occ if occ else adsk.fusion.Component.cast(entity)
+                node = occ if occ else _as_component(entity)
                 comp = occ.component if occ else node
                 if comp and comp.id not in seen_sel_ids:
                     seen_sel_ids.add(comp.id)
