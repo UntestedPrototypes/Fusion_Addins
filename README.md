@@ -6,7 +6,7 @@ These addons and guide were AI generated. It covers Three add-ins for Autodesk F
 |---|---|
 | **Batch Bodies Exporter** | Exports individual bodies from selected components to STEP, STL, 3MF, OBJ, IGES, or SAT |
 | **Combined Bodies Exporter** | Exports groups of bodies/components, each into one single STEP, IGES, or SAT file (part of the ExportBodies add-in) |
-| **Export Flat Patterns** | Exports sheet-metal flat patterns from selected components to DXF, IGES, STEP, or SAT |
+| **Export Flat Patterns** | Exports sheet-metal flat patterns from selected components to DXF, IGES, STEP, or SAT (part of the ExportBodies add-in) |
 | **HoleToSlot** | Creates a slot from a hole perpendicular to a reference edge. Used to add tolerances. |
 | **Fusion360KinematicsExporter** | Exports assemblies as URDF file. |
 ---
@@ -38,9 +38,6 @@ After copying, the directory should look like this:
       ExportBodies/
         ExportBodies.py
         ExportBodies.manifest
-      FlatPatternExporter/
-        FlatPatternExporter.py
-        FlatPatternExporter.manifest
         resources/
           cmd/
             16x16-normal.png
@@ -132,6 +129,8 @@ Everything not selected is temporarily hidden during the export, then visibility
 ---
 
 ## Using Export Flat Patterns
+
+Installed with the ExportBodies add-in (it replaces the separate FlatPatternExporter add-in - stop and unlink the old one in **Scripts and Add-Ins** if it is still listed). It uses the same **Naming Options** (prefix, document name, suffix, milestone) and remembered output folder as the body exporters, and is also listed under **Export** on the Flat Pattern toolbar.
 
 1. In the **Utilities** toolbar panel, click **Export Flat Patterns**.
 2. **Select** one or more sheet-metal component occurrences from the canvas or browser.
