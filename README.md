@@ -5,6 +5,7 @@ These addons and guide were AI generated. It covers Three add-ins for Autodesk F
 | Add-in | What it does |
 |---|---|
 | **Batch Bodies Exporter** | Exports individual bodies from selected components to STEP, STL, 3MF, OBJ, IGES, or SAT |
+| **Combined Bodies Exporter** | Exports groups of bodies/components, each into one single STEP, IGES, or SAT file (part of the ExportBodies add-in) |
 | **Export Flat Patterns** | Exports sheet-metal flat patterns from selected components to DXF, IGES, STEP, or SAT |
 | **HoleToSlot** | Creates a slot from a hole perpendicular to a reference edge. Used to add tolerances. |
 | **Fusion360KinematicsExporter** | Exports assemblies as URDF file. |
@@ -71,6 +72,7 @@ After copying, the directory should look like this:
 Both add-ins appear in the **Utilities** panel in the toolbar once running:
 
 - **Batch Bodies Exporter**
+- **Combined Bodies Exporter**
 - **Export Flat Patterns**
 
 If you do not see them, switch to the **Design** workspace -
@@ -88,6 +90,7 @@ the Utilities panel is workspace-dependent.
    - Tick **Include component name in filename** to prefix the body name with its component name.
    - Tick **Include sub-component bodies** to recurse into nested components.
    - Enter a **Filename Prefix** and/or **Filename Suffix** to add to every exported filename.
+   - Keep **Name every body in STEP (slicer friendly)** ticked (STEP only) so slicers such as Bambu Studio show the body name as the part name instead of the component name.
 6. Click **OK**.
 7. A folder picker appears - choose the destination folder.
 8. If any files already exist you will be asked whether to overwrite them.
@@ -97,6 +100,32 @@ the Utilities panel is workspace-dependent.
 
     [Prefix_]BodyName[_Suffix].ext
     [Prefix_]ComponentName_BodyName[_Suffix].ext   (when component name is included)
+
+---
+
+## Using Combined Bodies Exporter
+
+Installed with the ExportBodies add-in. Where the Batch Bodies Exporter writes one
+file per body, this writes **all** selected bodies/components into **one** file,
+keeping the assembly structure and positions.
+
+1. In the **Utilities** toolbar panel, click **Combined Bodies Exporter**.
+2. Choose **Select By** Components or Bodies and select one or more items (they can come from different components).
+3. Use the same filters as the batch exporter: **Include sub-component bodies**, **Solid / Surface / Sheet metal**, and **Export only visible bodies**. Bodies you select directly are always included.
+4. Under **Export Groups**, enter a **Group / File Name** and click **Add Group** to store the current selection as a group. Repeat for as many groups as you need; every group becomes its own file. Group names can be edited in the table, and **Remove** / **Clear** drop groups.
+5. Anything still selected when you click **OK** is exported as one more group, so for a single file you can skip **Add Group**.
+6. Pick an **Export Format** (STEP, IGES, SAT). Optionally tick **Include component name in filename** and set the same prefix/suffix **Naming Options** (applied to every group).
+7. Click **OK**, choose the destination folder, and confirm overwriting if any files exist.
+
+**Name every body in STEP (slicer friendly)** (on by default, STEP only): slicers such as Bambu Studio name parts after the STEP *component*, so the bodies of a multi-body component show up as "Component-SOLID-1", "-SOLID-2". With this option each such body becomes its own part named "Component_Body" (bodies of the top-level component, or of a component exported on its own, keep just their body name). Geometry and positions are unchanged.
+
+**Remembered settings:** when you click **OK**, the groups, filters, format, naming options and output folder are stored in the document. The next time you open the command in that document they are filled in again (save the document to keep them between sessions). Items that were deleted since are shown as "missing" in the group list.
+
+Everything not selected is temporarily hidden during the export, then visibility is restored.
+
+**Filename format:**
+
+    [Prefix_][ComponentNames_]GroupName[_Suffix].ext
 
 ---
 

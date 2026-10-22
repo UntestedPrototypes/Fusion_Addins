@@ -3,7 +3,7 @@
   "type": "addin",
   "id": "ExportBodiesAddin",
   "author": "Autodesk Assistant",
-  "description": { "": "Exports bodies from selected components to a chosen format" },
-  "version": "7.0.0",
+  "description": { "": "Exports bodies from selected components to a chosen format, one file per body or combined into a single file" },
+  "version": "7.1.0",
   "runOnStartup": false
 }
