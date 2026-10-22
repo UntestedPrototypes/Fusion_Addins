@@ -4,8 +4,7 @@ These addons and guide were AI generated. It covers Three add-ins for Autodesk F
 
 | Add-in | What it does |
 |---|---|
-| **Batch Bodies Exporter** | Exports individual bodies from selected components to STEP, STL, 3MF, OBJ, IGES, or SAT |
-| **Combined Bodies Exporter** | Exports groups of bodies/components, each into one single STEP, IGES, or SAT file (part of the ExportBodies add-in) |
+| **Bodies Exporter** | Exports groups of components/bodies - per group as separate files (STEP, STL, 3MF, OBJ, IGES, SAT) or combined into one file (STEP, IGES, SAT) |
 | **Export Flat Patterns** | Exports sheet-metal flat patterns from selected components to DXF, IGES, STEP, or SAT (part of the ExportBodies add-in) |
 | **HoleToSlot** | Creates a slot from a hole perpendicular to a reference edge. Used to add tolerances. |
 | **Fusion360KinematicsExporter** | Exports assemblies as URDF file. |
@@ -66,65 +65,48 @@ After copying, the directory should look like this:
 
 ### Step 3 - Confirm they are running
 
-Both add-ins appear in the **Utilities** panel in the toolbar once running:
+The add-ins' commands appear in the **Utilities** panel in the toolbar once running:
 
-- **Batch Bodies Exporter**
-- **Combined Bodies Exporter**
+- **Bodies Exporter**
 - **Export Flat Patterns**
 
-**Batch Bodies Exporter** and **Combined Bodies Exporter** are also listed under **Export** on the Flat Pattern toolbar, where the Utilities panel is not shown.
+Both are also listed under **Export** on the Flat Pattern toolbar, where the Utilities panel is not shown.
 
 If you do not see them, switch to the **Design** workspace -
 the Utilities panel is workspace-dependent.
 
 ---
 
-## Using Batch Bodies Exporter
+## Using Bodies Exporter
 
-1. In the **Utilities** toolbar panel, click **Batch Bodies Exporter**.
-2. **Select** one or more components from the canvas or browser.
-3. Choose which body types to include: **Solid**, **Surface**, and/or **Sheet metal**.
-4. Pick an **Export Format** (STEP, STL, 3MF, OBJ, IGES, SAT).
-5. Optionally:
-   - Tick **Include component name in filename** to prefix the body name with its component name.
-   - Tick **Include sub-component bodies** to recurse into nested components.
-   - Enter a **Filename Prefix** and/or **Filename Suffix** to add to every exported filename.
-   - Keep **Name every body in STEP (slicer friendly)** ticked (STEP only) so slicers such as Bambu Studio show the body name as the part name instead of the component name.
-6. Click **OK**.
-7. A folder picker appears - choose the destination folder. It opens at the last folder you exported to (shared by both exporters), or your Documents folder the first time.
-8. If any files already exist you will be asked whether to overwrite them.
-9. A summary dialog lists every exported file and any skipped bodies.
+Exports **groups** of components and/or bodies. Each group is exported on its own,
+either as **Separate** files (one file per body) or **Combined** into one file that
+keeps the assembly structure and positions.
 
-**Filename format:**
+1. In the **Utilities** toolbar panel (or **Export** on the Flat Pattern toolbar), click **Bodies Exporter**.
+2. Select components and/or bodies - one selection box takes both. In the canvas a click usually picks a body; use the browser to pick components. Tick **Include sub-component bodies** to recurse into nested components.
+3. Under **Export Groups**, enter a **Group / File Name**, choose the **New Group Output** (Separate / Combined) and **New Group Format**, then click **Add Group**. Repeat for as many groups as you need. **Only the groups in the table are exported** - a selection that was not added as a group is ignored.
+4. Each row of the table can be changed afterwards:
+   - **Name** - the file name of a Combined group (and the subfolder name, see below).
+   - **Output** - **Separate** (one file per body) or **Combined** (one file for the group).
+   - **Format** - Separate: 3MF, STEP, STL, OBJ, IGES, SAT. Combined: STEP, IGES, SAT.
+   - **Subfolder** - Separate only, off by default: put the group's files in a subfolder named after the group.
+   **Remove** / **Clear** drop groups.
+5. Choose which body types to include (**Solid**, **Surface**, **Sheet metal**) and whether to **Export only visible bodies**. Bodies you selected directly are always included. These settings apply to every group.
+6. Optionally tick **Include component name in filename** and set the **Naming Options** (prefix, document name as prefix, suffix, milestone `V#` as suffix) - applied to every group.
+7. Click **OK** and choose the destination folder. It opens at the last folder you exported to, or your Documents folder the first time.
+8. If any files already exist you are asked once whether to overwrite them all. A summary lists the exported files per group and anything skipped.
 
-    [Prefix_]BodyName[_Suffix].ext
-    [Prefix_]ComponentName_BodyName[_Suffix].ext   (when component name is included)
+Separate groups export each body once, even if its component is used several times. Combined groups keep every instance in its place. Everything not being exported is temporarily hidden during the export, then visibility is restored.
 
----
+**Name every body in STEP (slicer friendly)** (on by default, STEP only): slicers such as Bambu Studio name parts after the STEP *component*, so the bodies of a multi-body component show up as "Component-SOLID-1", "-SOLID-2". With this option each body becomes its own part named after the body ("Component_Body" inside sub-components). Geometry and positions are unchanged.
 
-## Using Combined Bodies Exporter
-
-Installed with the ExportBodies add-in. Where the Batch Bodies Exporter writes one
-file per body, this writes **all** selected bodies/components into **one** file,
-keeping the assembly structure and positions.
-
-1. In the **Utilities** toolbar panel, click **Combined Bodies Exporter**.
-2. Choose **Select By** Components or Bodies and select one or more items (they can come from different components).
-3. Use the same filters as the batch exporter: **Include sub-component bodies**, **Solid / Surface / Sheet metal**, and **Export only visible bodies**. Bodies you select directly are always included.
-4. Under **Export Groups**, enter a **Group / File Name** and click **Add Group** to store the current selection as a group. Repeat for as many groups as you need; every group becomes its own file. Group names can be edited in the table, and **Remove** / **Clear** drop groups.
-5. Anything still selected when you click **OK** is exported as one more group, so for a single file you can skip **Add Group**.
-6. Pick an **Export Format** (STEP, IGES, SAT). Optionally tick **Include component name in filename** and set the same prefix/suffix **Naming Options** (applied to every group).
-7. Click **OK**, choose the destination folder, and confirm overwriting if any files exist.
-
-**Name every body in STEP (slicer friendly)** (on by default, STEP only): slicers such as Bambu Studio name parts after the STEP *component*, so the bodies of a multi-body component show up as "Component-SOLID-1", "-SOLID-2". With this option each such body becomes its own part named "Component_Body" (bodies of the top-level component, or of a component exported on its own, keep just their body name). Geometry and positions are unchanged.
-
-**Remembered settings:** when you click **OK**, the groups, filters, format, naming options and output folder are stored in the document. The next time you open the command in that document they are filled in again (save the document to keep them between sessions). Items that were deleted since are shown as "missing" in the group list.
-
-Everything not selected is temporarily hidden during the export, then visibility is restored.
+**Remembered settings:** when you click **OK**, the groups (with their output, format and subfolder setting), filters, naming options and output folder are stored in the document. The next time you open the command in that document they are filled in again (save the document to keep them between sessions). Items that were deleted since are shown as "missing" in the group list. Groups saved by the older Combined Bodies Exporter load as Combined groups.
 
 **Filename format:**
 
-    [Prefix_][ComponentNames_]GroupName[_Suffix].ext
+    Separate:  [Subfolder/][Prefix_][ComponentName_]BodyName[_Suffix].ext
+    Combined:  [Prefix_][ComponentNames_]GroupName[_Suffix].ext
 
 ---
 

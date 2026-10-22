@@ -7,16 +7,20 @@ import traceback
 
 import adsk.core
 
-from .lib import common, naming, selection, folders, step_post
-from .commands import batch_bodies, combined_bodies, flat_pattern
+from .lib import (common, naming, selection, folders, step_post, doc_state,
+                  export_separate, export_combined)
+from .commands import export_bodies, flat_pattern
 
 # Fusion keeps submodules cached when the add-in is stopped and started again,
 # so reload them (dependencies first) to pick up code changes without a restart.
-for _module in (common, naming, selection, folders, step_post,
-                batch_bodies, combined_bodies, flat_pattern):
+for _module in (common, naming, selection, folders, step_post, doc_state,
+                export_separate, export_combined, export_bodies, flat_pattern):
     importlib.reload(_module)
 
-COMMANDS = (batch_bodies, combined_bodies, flat_pattern)
+COMMANDS = (export_bodies, flat_pattern)
+
+# Buttons of commands that were merged away (removed if still registered)
+LEGACY_CMD_IDS = ("ExportCombinedCmd",)
 
 PANEL_ID = "UtilityPanel"
 # Also shown under Export while editing a sheet metal flat pattern, where the
@@ -29,6 +33,9 @@ def run(context):
     try:
         common._disable_ghosting()
         ui = adsk.core.Application.get().userInterface
+
+        for cmd_id in LEGACY_CMD_IDS:
+            _remove_command(ui, cmd_id)
 
         cmd_defs = []
         for cmd in COMMANDS:
@@ -64,6 +71,8 @@ def stop(context):
         if ui_stop:
             for cmd in COMMANDS:
                 _remove_command(ui_stop, cmd.CMD_ID)
+            for cmd_id in LEGACY_CMD_IDS:
+                _remove_command(ui_stop, cmd_id)
         common._handlers.clear()
     except Exception:
         pass

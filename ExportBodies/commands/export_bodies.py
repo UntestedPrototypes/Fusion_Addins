@@ -1,0 +1,585 @@
+"""Bodies Exporter - export groups of components/bodies. Each group is
+exported either as Separate files (one per body) or Combined into one file,
+with its own format."""
+import os
+import traceback
+
+import adsk.core
+import adsk.fusion
+
+from ..lib.common import app, ui, _handlers, _disable_ghosting, _do_events, _safe_name
+from ..lib.doc_state import _entity_ref, _resolve_entity_ref, _read_state, _write_state
+from ..lib.export_combined import _gather_group_bodies, _export_combined_file
+from ..lib.export_separate import _plan_separate, _export_separate_body
+from ..lib.folders import _pick_output_folder
+from ..lib.naming import _add_naming_inputs, _resolve_affixes, _split_doc_name
+from ..lib.selection import _add_selection_inputs, _add_body_type_inputs
+from ..lib.step_post import _add_split_bodies_input, _split_step_bodies
+
+CMD_ID      = "ExportBodiesCmd"
+CMD_NAME    = "Bodies Exporter"
+CMD_TOOLTIP = ("Export groups of components/bodies - each group as separate files "
+               "(one per body) or combined into one file")
+
+SEPARATE = "Separate"
+COMBINED = "Combined"
+MODES    = (SEPARATE, COMBINED)
+
+# label -> (extension, exporter key)
+FORMAT_INFO = {
+    "3MF":  (".3mf",  "3mf"),
+    "STEP": (".step", "step"),
+    "STL":  (".stl",  "stl"),
+    "OBJ":  (".obj",  "obj"),
+    "IGES": (".iges", "iges"),
+    "SAT":  (".sat",  "sat"),
+}
+# Combined output needs a format that holds several bodies and the assembly
+MODE_FORMATS = {
+    SEPARATE: ("3MF", "STEP", "STL", "OBJ", "IGES", "SAT"),
+    COMBINED: ("STEP", "IGES", "SAT"),
+}
+DEFAULT_FORMAT = "STEP"
+
+STATE_BOOL_IDS   = ("chk_recurse", "chk_solid", "chk_surface", "chk_sheetmetal",
+                    "chk_visible_only", "chk_compname", "chk_split_bodies",
+                    "chk_filename_prefix", "chk_milestone_suffix")
+STATE_STRING_IDS = ("prefix", "suffix")
+
+# Groups in the open dialog: [{"entities": [...], "seq": int}]. Row inputs
+# are found by id: group_<field>_<seq>.
+_groups = []
+_group_row_seq = [0]
+
+
+def _row_id(field, seq):
+    return "group_{}_{}".format(field, seq)
+
+
+def _fill_formats(dropdown, mode, keep=None):
+    """Refill a format dropdown for mode, keeping keep if it is still allowed."""
+    allowed = MODE_FORMATS[mode]
+    chosen = keep if keep in allowed else DEFAULT_FORMAT
+    dropdown.listItems.clear()
+    for label in allowed:
+        dropdown.listItems.add(label, label == chosen)
+
+
+def _fill_modes(dropdown, mode):
+    for m in MODES:
+        dropdown.listItems.add(m, m == mode)
+
+
+def _selected(dropdown, fallback):
+    item = dropdown.selectedItem if dropdown else None
+    return item.name if item else fallback
+
+
+# ---------------------------------------------------------------------------
+# CommandCreated
+# ---------------------------------------------------------------------------
+class CreatedHandler(adsk.core.CommandCreatedEventHandler):
+    def notify(self, args):
+        try:
+            cmd    = args.command
+            cmd.isRepeatable = False
+            inputs = cmd.commandInputs
+
+            _groups.clear()
+
+            _add_selection_inputs(inputs)
+
+            grp_groups = inputs.addGroupCommandInput("grp_groups", "Export Groups")
+            gc = grp_groups.children
+            base_doc_name, _ = _split_doc_name()
+            gc.addStringValueInput("group_name", "Group / File Name", base_doc_name)
+            new_mode = gc.addDropDownCommandInput(
+                "new_mode", "New Group Output", adsk.core.DropDownStyles.TextListDropDownStyle)
+            _fill_modes(new_mode, COMBINED)
+            new_fmt = gc.addDropDownCommandInput(
+                "new_format", "New Group Format", adsk.core.DropDownStyles.TextListDropDownStyle)
+            _fill_formats(new_fmt, COMBINED)
+
+            table = gc.addTableCommandInput("tbl_groups", "Groups", 5, "4:3:2:1:3")
+            table.minimumVisibleRows = 3
+            table.maximumVisibleRows = 8
+            table.tooltip = ("Each row is exported on its own: Separate = one file per body, "
+                             "Combined = one file for the whole group")
+            btn_add = table.commandInputs.addBoolValueInput("btn_add_group", "Add Group", False, "", False)
+            btn_add.tooltip = "Store the current selection as a new export group"
+            table.addToolbarCommandInput(btn_add)
+            btn_rem = table.commandInputs.addBoolValueInput("btn_remove_group", "Remove", False, "", False)
+            btn_rem.tooltip = "Remove the selected group"
+            table.addToolbarCommandInput(btn_rem)
+            btn_clr = table.commandInputs.addBoolValueInput("btn_clear_groups", "Clear", False, "", False)
+            btn_clr.tooltip = "Remove all groups"
+            table.addToolbarCommandInput(btn_clr)
+
+            gc.addTextBoxCommandInput(
+                "groups_hint", "",
+                "Select components and/or bodies, enter a name and click <b>Add Group</b>. "
+                "Only the groups in the table are exported. Per group: <b>Separate</b> = one "
+                "file per body (tick the box for a subfolder named after the group), "
+                "<b>Combined</b> = one file.",
+                3, True
+            )
+
+            _add_body_type_inputs(inputs)
+
+            grp_export = inputs.addGroupCommandInput("grp_export", "Export Options")
+            grp_export.children.addBoolValueInput(
+                "chk_compname", "Include component name in filename", True, "", False
+            )
+            _add_split_bodies_input(grp_export)
+
+            _add_naming_inputs(inputs)
+
+            _load_state(inputs)
+
+            h_exec = _ExecuteHandler()
+            cmd.execute.add(h_exec)
+            _handlers.append(h_exec)
+
+            h_val = _ValidateHandler()
+            cmd.validateInputs.add(h_val)
+            _handlers.append(h_val)
+
+            h_in = _InputChangedHandler()
+            cmd.inputChanged.add(h_in)
+            _handlers.append(h_in)
+
+            h_destroy = _DestroyHandler()
+            cmd.destroy.add(h_destroy)
+            _handlers.append(h_destroy)
+
+        except Exception:
+            ui.messageBox("Bodies Exporter commandCreated error:\n" + traceback.format_exc())
+
+
+class _ValidateHandler(adsk.core.ValidateInputsEventHandler):
+    def notify(self, args):
+        try:
+            inputs = args.inputs
+            solid  = inputs.itemById("chk_solid").value
+            surf   = inputs.itemById("chk_surface").value
+            sm     = inputs.itemById("chk_sheetmetal").value
+
+            has_items  = any(g["entities"] for g in _groups)
+            has_bodies = any(adsk.fusion.BRepBody.cast(e)
+                             for g in _groups for e in g["entities"])
+
+            args.areInputsValid = has_items and (solid or surf or sm or has_bodies)
+        except Exception:
+            args.areInputsValid = False
+
+
+class _InputChangedHandler(adsk.core.InputChangedEventHandler):
+    def notify(self, args):
+        try:
+            cmd_input = args.input
+            inputs = cmd_input.parentCommand.commandInputs
+            input_id = cmd_input.id
+
+            if input_id == "new_mode":
+                new_fmt = inputs.itemById("new_format")
+                _fill_formats(new_fmt, _selected(cmd_input, COMBINED),
+                              _selected(new_fmt, DEFAULT_FORMAT))
+            elif input_id.startswith("group_mode_"):
+                seq = int(input_id.rsplit("_", 1)[1])
+                mode = _selected(cmd_input, COMBINED)
+                fmt = inputs.itemById(_row_id("fmt", seq))
+                _fill_formats(fmt, mode, _selected(fmt, DEFAULT_FORMAT))
+                sub = inputs.itemById(_row_id("sub", seq))
+                if sub:
+                    sub.isEnabled = (mode == SEPARATE)
+            elif input_id == "btn_add_group":
+                _add_group_from_selection(inputs)
+            elif input_id == "btn_remove_group":
+                table = inputs.itemById("tbl_groups")
+                row = table.selectedRow
+                if 0 <= row < len(_groups):
+                    table.deleteRow(row)
+                    _groups.pop(row)
+            elif input_id == "btn_clear_groups":
+                table = inputs.itemById("tbl_groups")
+                for row in range(len(_groups) - 1, -1, -1):
+                    table.deleteRow(row)
+                _groups.clear()
+        except Exception:
+            ui.messageBox("Bodies Exporter inputChanged error:\n" + traceback.format_exc())
+
+
+class _DestroyHandler(adsk.core.CommandEventHandler):
+    def notify(self, args):
+        _groups.clear()
+
+
+# ---------------------------------------------------------------------------
+# Group table
+# ---------------------------------------------------------------------------
+def _add_group_from_selection(inputs):
+    sel_input = inputs.itemById("components")
+    if sel_input.selectionCount == 0:
+        ui.messageBox("Select one or more components or bodies first, then click Add Group.")
+        return
+
+    entities = [sel_input.selection(i).entity for i in range(sel_input.selectionCount)]
+    name_input = inputs.itemById("group_name")
+    name = name_input.value.strip() or "Group {}".format(len(_groups) + 1)
+    mode = _selected(inputs.itemById("new_mode"), COMBINED)
+    fmt  = _selected(inputs.itemById("new_format"), DEFAULT_FORMAT)
+
+    _add_group_row(inputs.itemById("tbl_groups"), name, entities, mode, fmt, False)
+
+    sel_input.clearSelection()
+    name_input.value = "Group {}".format(len(_groups) + 1)
+
+
+def _describe_items(entities, missing=0):
+    n_bodies = sum(1 for e in entities if adsk.fusion.BRepBody.cast(e))
+    n_comps  = len(entities) - n_bodies
+    parts = []
+    if n_comps:
+        parts.append("{} comp{}".format(n_comps, "" if n_comps == 1 else "s"))
+    if n_bodies:
+        parts.append("{} bod{}".format(n_bodies, "y" if n_bodies == 1 else "ies"))
+    text = ", ".join(parts) or "empty"
+    if missing:
+        text += " ({} missing)".format(missing)
+    return text
+
+
+def _add_group_row(table, name, entities, mode, fmt, subfolder, missing=0):
+    _group_row_seq[0] += 1
+    seq = _group_row_seq[0]
+    row = table.rowCount
+    tci = table.commandInputs
+
+    name_box = tci.addStringValueInput(_row_id("name", seq), "Name", name)
+    mode_box = tci.addDropDownCommandInput(
+        _row_id("mode", seq), "Output", adsk.core.DropDownStyles.TextListDropDownStyle)
+    _fill_modes(mode_box, mode if mode in MODES else COMBINED)
+    fmt_box = tci.addDropDownCommandInput(
+        _row_id("fmt", seq), "Format", adsk.core.DropDownStyles.TextListDropDownStyle)
+    _fill_formats(fmt_box, _selected(mode_box, COMBINED), fmt)
+    sub_box = tci.addBoolValueInput(_row_id("sub", seq), "Subfolder", True, "", bool(subfolder))
+    sub_box.tooltip = "Separate output only: put this group's files in a subfolder named after the group"
+    sub_box.isEnabled = (_selected(mode_box, COMBINED) == SEPARATE)
+    count_box = tci.addTextBoxCommandInput(
+        _row_id("count", seq), "Items", _describe_items(entities, missing), 1, True)
+
+    for col, box in enumerate((name_box, mode_box, fmt_box, sub_box, count_box)):
+        table.addCommandInput(box, row, col)
+
+    _groups.append({"entities": entities, "seq": seq})
+
+
+def _group_specs(inputs):
+    """Read the table: [(name, mode, format label, subfolder, entities)]."""
+    specs = []
+    for g in _groups:
+        seq = g["seq"]
+        name_box = inputs.itemById(_row_id("name", seq))
+        name = name_box.value.strip() if name_box else ""
+        mode = _selected(inputs.itemById(_row_id("mode", seq)), COMBINED)
+        fmt  = _selected(inputs.itemById(_row_id("fmt", seq)), DEFAULT_FORMAT)
+        if fmt not in MODE_FORMATS[mode]:
+            fmt = DEFAULT_FORMAT
+        sub_box = inputs.itemById(_row_id("sub", seq))
+        subfolder = bool(sub_box.value) if (sub_box and mode == SEPARATE) else False
+        specs.append((name or "Group {}".format(len(specs) + 1), mode, fmt, subfolder,
+                      g["entities"]))
+    return specs
+
+
+# ---------------------------------------------------------------------------
+# Remembered state
+# ---------------------------------------------------------------------------
+def _save_state(design, inputs, specs):
+    groups = []
+    for name, mode, fmt, subfolder, entities in specs:
+        refs = [r for r in (_entity_ref(e) for e in entities) if r]
+        if refs:
+            groups.append({"name": name, "mode": mode, "format": fmt,
+                           "subfolder": subfolder, "items": refs})
+    _write_state(design, {
+        "groups":     groups,
+        "new_mode":   _selected(inputs.itemById("new_mode"), COMBINED),
+        "new_format": _selected(inputs.itemById("new_format"), DEFAULT_FORMAT),
+        "bools":      {i: inputs.itemById(i).value for i in STATE_BOOL_IDS},
+        "strings":    {i: inputs.itemById(i).value for i in STATE_STRING_IDS},
+    })
+
+
+def _legacy_format(label):
+    """Old Combined exporter stored labels like "STEP (.step)"."""
+    word = (label or "").split(" ")[0].upper()
+    return word if word in FORMAT_INFO else DEFAULT_FORMAT
+
+
+def _load_state(inputs):
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    if not design:
+        return
+    state = _read_state(design)
+    if not state:
+        return
+
+    for input_id, value in state.get("bools", {}).items():
+        inp = inputs.itemById(input_id)
+        if inp:
+            inp.value = bool(value)
+    for input_id, value in state.get("strings", {}).items():
+        inp = inputs.itemById(input_id)
+        if inp:
+            inp.value = value
+
+    legacy_fmt = _legacy_format(state.get("format"))
+    new_mode = state.get("new_mode", COMBINED)
+    if new_mode in MODES:
+        mode_box = inputs.itemById("new_mode")
+        for i in range(mode_box.listItems.count):
+            item = mode_box.listItems.item(i)
+            item.isSelected = (item.name == new_mode)
+        _fill_formats(inputs.itemById("new_format"), new_mode,
+                      state.get("new_format", legacy_fmt))
+
+    saved_groups = state.get("groups", [])
+    if saved_groups:
+        root = design.rootComponent
+        all_occs = root.allOccurrences
+        occ_by_path = {all_occs.item(i).fullPathName: all_occs.item(i)
+                       for i in range(all_occs.count)}
+        table = inputs.itemById("tbl_groups")
+        for g in saved_groups:
+            entities = []
+            missing = 0
+            for ref in g.get("items", []):
+                ent = _resolve_entity_ref(design, ref, occ_by_path)
+                if ent:
+                    entities.append(ent)
+                else:
+                    missing += 1
+            # Groups saved by the old Combined exporter have no mode/format
+            _add_group_row(table,
+                           g.get("name", "Group {}".format(len(_groups) + 1)),
+                           entities,
+                           g.get("mode", COMBINED),
+                           g.get("format", legacy_fmt),
+                           g.get("subfolder", False),
+                           missing)
+        inputs.itemById("group_name").value = "Group {}".format(len(_groups) + 1)
+
+
+# ---------------------------------------------------------------------------
+# Execute
+# ---------------------------------------------------------------------------
+class _ExecuteHandler(adsk.core.CommandEventHandler):
+    def notify(self, args):
+        try:
+            _disable_ghosting()
+            inputs       = args.command.commandInputs
+            want_solid   = inputs.itemById("chk_solid").value
+            want_surf    = inputs.itemById("chk_surface").value
+            want_sm      = inputs.itemById("chk_sheetmetal").value
+            visible_only = inputs.itemById("chk_visible_only").value
+            inc_comp     = inputs.itemById("chk_compname").value
+            recurse      = inputs.itemById("chk_recurse").value
+            split_bodies = inputs.itemById("chk_split_bodies").value
+
+            prefix, suffix = _resolve_affixes(inputs)
+
+            design = adsk.fusion.Design.cast(app.activeProduct)
+            if not design:
+                ui.messageBox("No active Fusion design.")
+                return
+
+            specs = _group_specs(inputs)
+            try:
+                _save_state(design, inputs, specs)
+            except Exception:
+                pass  # remembering groups must never block the export
+
+            # jobs: dicts with group, kind, rel_dir, base, ext, fmt and the
+            # payload for that kind ("keep" bodies or a separate body)
+            jobs    = []
+            skipped = []
+            for group_name, mode, fmt_label, subfolder, entities in specs:
+                ext, fmt = FORMAT_INFO[fmt_label]
+                if mode == COMBINED:
+                    keep, g_skipped, comp_names = _gather_group_bodies(
+                        entities, want_solid, want_surf, want_sm, visible_only, recurse)
+                    skipped.extend("[{}] {}".format(group_name, s) for s in g_skipped)
+                    if not keep:
+                        skipped.append("[{}] no bodies matched the filters".format(group_name))
+                        continue
+                    base = _safe_name(group_name)
+                    if inc_comp and comp_names:
+                        base = "_".join(_safe_name(n) for n in comp_names) + "_" + base
+                    if prefix:
+                        base = prefix + "_" + base
+                    if suffix:
+                        base = base + "_" + suffix
+                    jobs.append({"group": group_name, "kind": COMBINED, "keep": keep,
+                                 "rel_dir": "", "base": base, "ext": ext, "fmt": fmt})
+                else:
+                    plan, g_skipped = _plan_separate(
+                        entities, want_solid, want_surf, want_sm, visible_only, recurse,
+                        inc_comp, prefix, suffix)
+                    skipped.extend("[{}] {}".format(group_name, s) for s in g_skipped)
+                    if not plan:
+                        skipped.append("[{}] no bodies matched the filters".format(group_name))
+                        continue
+                    rel_dir = _safe_name(group_name) if subfolder else ""
+                    for comp, body_idx, body_name, base in plan:
+                        jobs.append({"group": group_name, "kind": SEPARATE, "comp": comp,
+                                     "body_idx": body_idx, "body_name": body_name,
+                                     "rel_dir": rel_dir, "base": base, "ext": ext, "fmt": fmt})
+
+            if not jobs:
+                msg_parts = ["No bodies matched the selected filters."]
+                if skipped:
+                    msg_parts.append("Skipped:\n" + "\n".join("  " + s for s in skipped))
+                ui.messageBox("\n\n".join(msg_parts))
+                return
+
+            # Keep every output path unique
+            used = set()
+            for job in jobs:
+                base, n = job["base"], 2
+                while (job["rel_dir"].lower(), (base + job["ext"]).lower()) in used:
+                    base = "{}_{}".format(job["base"], n)
+                    n += 1
+                used.add((job["rel_dir"].lower(), (base + job["ext"]).lower()))
+                job["base"] = base
+
+            folder = _pick_output_folder(_read_state(design).get("folder", ""))
+            if not folder:
+                return
+            try:
+                _write_state(design, {"folder": folder})
+            except Exception:
+                pass
+
+            for job in jobs:
+                job["path"] = os.path.join(folder, job["rel_dir"], job["base"] + job["ext"])
+
+            conflicts = [j for j in jobs if os.path.exists(j["path"])]
+            overwrite = True
+            if conflicts:
+                conflict_names = "\n".join(
+                    "  " + os.path.relpath(j["path"], folder) for j in conflicts[:40])
+                if len(conflicts) > 40:
+                    conflict_names += "\n  ... and {} more".format(len(conflicts) - 40)
+                answer = ui.messageBox(
+                    "{} file(s) already exist:\n{}\n\nOverwrite all?".format(
+                        len(conflicts), conflict_names),
+                    "Overwrite?",
+                    adsk.core.MessageBoxButtonTypes.YesNoButtonType,
+                    adsk.core.MessageBoxIconTypes.QuestionIconType
+                )
+                overwrite = (answer == adsk.core.DialogResults.DialogYes)
+
+            exported = {}      # group name -> [relative file paths]
+            errors   = []
+            cancelled = False
+            total = len(jobs)
+
+            progress = None
+            try:
+                progress = ui.createProgressDialog()
+                if progress:
+                    progress.isCancelButtonShown = True
+                    progress.show("Exporting Bodies", "Preparing export...", 0, total, 0)
+                    _do_events()
+            except Exception:
+                progress = None
+
+            try:
+                for idx, job in enumerate(jobs):
+                    _do_events()
+                    if progress and progress.wasCancelled:
+                        cancelled = True
+                        break
+
+                    path = job["path"]
+                    rel  = os.path.relpath(path, folder)
+                    if progress:
+                        progress.progressValue = idx
+                        progress.message = "[{}] file {} of {}:\n{}".format(
+                            job["group"], idx + 1, total, rel)
+                    _do_events()
+
+                    if os.path.exists(path):
+                        if not overwrite:
+                            skipped.append("{} (not overwritten)".format(rel))
+                            continue
+                        try:
+                            os.remove(path)
+                        except Exception as exc:
+                            errors.append("{}: could not remove: {}".format(rel, exc))
+                            continue
+                    else:
+                        try:
+                            os.makedirs(os.path.dirname(path), exist_ok=True)
+                        except Exception as exc:
+                            errors.append("{}: could not create folder: {}".format(rel, exc))
+                            continue
+
+                    try:
+                        if job["kind"] == COMBINED:
+                            ok = _export_combined_file(design, job["keep"], path, job["fmt"])
+                        else:
+                            ok = _export_separate_body(design.exportManager, job["comp"],
+                                                       job["body_idx"], path, job["fmt"])
+                        if ok:
+                            exported.setdefault(job["group"], []).append(rel)
+                            if split_bodies and job["fmt"] == "step":
+                                if progress:
+                                    progress.message = "Naming bodies in {}...".format(rel)
+                                _do_events()
+                                try:
+                                    _split_step_bodies(path, force=(job["kind"] == SEPARATE))
+                                except Exception as exc:
+                                    errors.append("{}: exported, but body naming failed: {}".format(
+                                        rel, exc))
+                        else:
+                            errors.append("{}: execute() returned False".format(rel))
+                    except Exception as exc:
+                        errors.append("{}: {}".format(rel, exc))
+                    _do_events()
+
+                    if progress:
+                        progress.progressValue = idx + 1
+            finally:
+                if progress:
+                    try:
+                        progress.hide()
+                    except Exception:
+                        pass
+                    progress = None
+                _do_events()
+
+            parts = []
+            if cancelled:
+                parts.append("Export cancelled by user.")
+            if exported:
+                n_files = sum(len(v) for v in exported.values())
+                lines = []
+                for group_name, files in exported.items():
+                    lines.append("{} ({} file{}):".format(
+                        group_name, len(files), "" if len(files) == 1 else "s"))
+                    lines.extend("  " + f for f in files[:25])
+                    if len(files) > 25:
+                        lines.append("  ... and {} more".format(len(files) - 25))
+                parts.append("Exported {} file(s) to:\n{}\n\n{}".format(
+                    n_files, folder, "\n".join(lines)))
+            if skipped:
+                parts.append("Skipped {}:\n{}".format(
+                    len(skipped), "\n".join("  " + s for s in skipped)))
+            if errors:
+                parts.append("Errors:\n" + "\n".join("  " + e for e in errors))
+            ui.messageBox("\n\n".join(parts) or "Nothing exported.")
+
+        except Exception:
+            ui.messageBox("Bodies Exporter execute error:\n" + traceback.format_exc())
