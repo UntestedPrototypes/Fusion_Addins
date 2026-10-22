@@ -75,6 +75,8 @@ Both add-ins appear in the **Utilities** panel in the toolbar once running:
 - **Combined Bodies Exporter**
 - **Export Flat Patterns**
 
+**Batch Bodies Exporter** and **Combined Bodies Exporter** are also listed under **Export** on the Flat Pattern toolbar, where the Utilities panel is not shown.
+
 If you do not see them, switch to the **Design** workspace -
 the Utilities panel is workspace-dependent.
 
@@ -92,7 +94,7 @@ the Utilities panel is workspace-dependent.
    - Enter a **Filename Prefix** and/or **Filename Suffix** to add to every exported filename.
    - Keep **Name every body in STEP (slicer friendly)** ticked (STEP only) so slicers such as Bambu Studio show the body name as the part name instead of the component name.
 6. Click **OK**.
-7. A folder picker appears - choose the destination folder.
+7. A folder picker appears - choose the destination folder. It opens at the last folder you exported to (shared by both exporters), or your Documents folder the first time.
 8. If any files already exist you will be asked whether to overwrite them.
 9. A summary dialog lists every exported file and any skipped bodies.
 

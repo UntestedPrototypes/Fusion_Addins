@@ -13,6 +13,9 @@ ui        = None
 _handlers = []
 
 PANEL_ID = "UtilityPanel"
+# Also shown under Export while editing a sheet metal flat pattern, where the
+# Utilities panel is not available
+PANEL_IDS = (PANEL_ID, "SheetmetalFlatPatternExportPanel")
 
 CMD_BATCH_ID    = "ExportBodiesCmd"
 CMD_COMBINED_ID = "ExportCombinedCmd"
@@ -41,9 +44,8 @@ def run(context):
         app = adsk.core.Application.get()
         ui  = app.userInterface
 
-        panel = ui.allToolbarPanels.itemById(PANEL_ID)
-        _remove_command(ui, panel, CMD_BATCH_ID)
-        _remove_command(ui, panel, CMD_COMBINED_ID)
+        _remove_command(ui, CMD_BATCH_ID)
+        _remove_command(ui, CMD_COMBINED_ID)
 
         batch_def = ui.commandDefinitions.addButtonDefinition(
             CMD_BATCH_ID,
@@ -65,10 +67,15 @@ def run(context):
         combined_def.commandCreated.add(h)
         _handlers.append(h)
 
-        if panel:
-            panel.controls.addCommand(batch_def)
-            panel.controls.addCommand(combined_def)
-        else:
+        missing = []
+        for panel_id in PANEL_IDS:
+            panel = ui.allToolbarPanels.itemById(panel_id)
+            if panel:
+                panel.controls.addCommand(batch_def)
+                panel.controls.addCommand(combined_def)
+            else:
+                missing.append(panel_id)
+        if PANEL_ID in missing:
             ui.messageBox("ExportBodies: Utility panel not found.")
     except Exception:
         if ui:
@@ -80,19 +87,20 @@ def stop(context):
         app_stop = adsk.core.Application.get()
         ui_stop = app_stop.userInterface if app_stop else None
         if ui_stop:
-            panel = ui_stop.allToolbarPanels.itemById(PANEL_ID)
-            _remove_command(ui_stop, panel, CMD_BATCH_ID)
-            _remove_command(ui_stop, panel, CMD_COMBINED_ID)
+            _remove_command(ui_stop, CMD_BATCH_ID)
+            _remove_command(ui_stop, CMD_COMBINED_ID)
         _handlers.clear()
     except Exception:
         pass
 
 
-def _remove_command(ui_obj, panel, cmd_id):
-    if panel:
-        ctrl = panel.controls.itemById(cmd_id)
-        if ctrl:
-            ctrl.deleteMe()
+def _remove_command(ui_obj, cmd_id):
+    for panel_id in PANEL_IDS:
+        panel = ui_obj.allToolbarPanels.itemById(panel_id)
+        if panel:
+            ctrl = panel.controls.itemById(cmd_id)
+            if ctrl:
+                ctrl.deleteMe()
     cmd_def = ui_obj.commandDefinitions.itemById(cmd_id)
     if cmd_def:
         cmd_def.deleteMe()
@@ -281,6 +289,64 @@ def _handle_sel_mode(cmd_input):
             sel_input.addSelectionFilter("RootComponents")
 
 
+# ---------------------------------------------------------------------------
+# Output folder picker - opens at the last used folder (shared by both
+# exporters and kept between Fusion sessions), else the user's Documents
+# ---------------------------------------------------------------------------
+_SETTINGS_PATH = os.path.join(
+    os.getenv("APPDATA") or os.path.join(os.path.expanduser("~"), ".config"),
+    "UntestedPrototypes", "ExportBodies.json"
+)
+
+
+def _load_settings():
+    try:
+        with open(_SETTINGS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_settings(updates):
+    try:
+        settings = _load_settings()
+        settings.update(updates)
+        os.makedirs(os.path.dirname(_SETTINGS_PATH), exist_ok=True)
+        with open(_SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+    except Exception:
+        pass  # remembering the folder must never block the export
+
+
+def _default_folder():
+    docs = os.path.join(os.path.expanduser("~"), "Documents")
+    return docs if os.path.isdir(docs) else os.path.expanduser("~")
+
+
+def _pick_output_folder(preferred=""):
+    """Show the folder dialog starting at preferred (e.g. this document's last
+    folder), else the last folder used by either exporter, else Documents.
+    Returns the chosen folder, or None when cancelled/invalid.
+    """
+    start = ""
+    for candidate in (preferred, _load_settings().get("last_folder", "")):
+        if candidate and os.path.isdir(candidate):
+            start = candidate
+            break
+
+    dlg = ui.createFolderDialog()
+    dlg.title            = "Select Output Folder"
+    dlg.initialDirectory = start or _default_folder()
+    if dlg.showDialog() != adsk.core.DialogResults.DialogOK:
+        return None
+    folder = dlg.folder
+    if not os.path.isdir(folder):
+        ui.messageBox("Selected folder does not exist:\n" + folder)
+        return None
+    _save_settings({"last_folder": folder})
+    return folder
+
+
 def _disable_ghosting():
     try:
         import ctypes
@@ -447,14 +513,8 @@ class _ExecuteHandler(adsk.core.CommandEventHandler):
 
             prefix, suffix = _resolve_affixes(inputs)
 
-            dlg = ui.createFolderDialog()
-            dlg.title            = "Select Output Folder"
-            dlg.initialDirectory = os.path.join(os.path.expanduser("~"), "Documents")
-            if dlg.showDialog() != adsk.core.DialogResults.DialogOK:
-                return
-            folder = dlg.folder
-            if not os.path.isdir(folder):
-                ui.messageBox("Selected folder does not exist:\n" + folder)
+            folder = _pick_output_folder()
+            if not folder:
                 return
 
             design     = app.activeProduct
@@ -1206,16 +1266,8 @@ class _CombinedExecuteHandler(adsk.core.CommandEventHandler):
                 ui.messageBox("\n\n".join(msg_parts))
                 return
 
-            dlg = ui.createFolderDialog()
-            dlg.title            = "Select Output Folder"
-            last_folder = _read_state(design).get("folder", "")
-            dlg.initialDirectory = last_folder if os.path.isdir(last_folder) else \
-                os.path.join(os.path.expanduser("~"), "Documents")
-            if dlg.showDialog() != adsk.core.DialogResults.DialogOK:
-                return
-            folder = dlg.folder
-            if not os.path.isdir(folder):
-                ui.messageBox("Selected folder does not exist:\n" + folder)
+            folder = _pick_output_folder(_read_state(design).get("folder", ""))
+            if not folder:
                 return
             try:
                 _write_state(design, {"folder": folder})
