@@ -1,6 +1,7 @@
 """Bodies Exporter - export groups of components/bodies. Each group is
 exported either as Separate files (one per body) or Combined into one file,
 with its own format."""
+import os
 import traceback
 
 import adsk.core
@@ -21,6 +22,8 @@ CMD_ID      = "ExportBodiesCmd"
 CMD_NAME    = "Bodies Exporter"
 CMD_TOOLTIP = ("Export groups of components/bodies - each group as separate files "
                "(one per body) or combined into one file")
+CMD_RESOURCES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "resources", "bodies_exporter")
 
 STATE_BOOL_IDS   = ("chk_recurse", "chk_solid", "chk_surface", "chk_sheetmetal",
                     "chk_visible_only", "chk_compname", "chk_split_bodies",

@@ -1,5 +1,6 @@
 """Quick Bodies Exporter - export the current selection straight away,
 without groups: Separate (one file per body) or Combined (one file)."""
+import os
 import traceback
 
 import adsk.core
@@ -18,6 +19,8 @@ CMD_ID      = "QuickExportBodiesCmd"
 CMD_NAME    = "Quick Bodies Exporter"
 CMD_TOOLTIP = ("Export the selected components/bodies right away - one file per body "
                "or combined into one file")
+CMD_RESOURCES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "resources", "quick_bodies")
 
 # Options remembered per document (under their own key, apart from the
 # Bodies Exporter's groups)

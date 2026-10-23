@@ -6,6 +6,7 @@ import adsk.fusion
 
 from .common import _as_component
 
+# Kept from the add-in's former name (ExportBodies) so saved groups still load
 STATE_ATTR_GROUP = "UntestedPrototypes_ExportBodies"
 STATE_ATTR_NAME  = "combined_state"
 

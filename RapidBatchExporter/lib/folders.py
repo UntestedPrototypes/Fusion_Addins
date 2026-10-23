@@ -13,7 +13,7 @@ from .common import ui
 # ---------------------------------------------------------------------------
 _SETTINGS_PATH = os.path.join(
     os.getenv("APPDATA") or os.path.join(os.path.expanduser("~"), ".config"),
-    "UntestedPrototypes", "ExportBodies.json"
+    "UntestedPrototypes", "ExportBodies.json"   # former name kept: remembers the last folder
 )
 
 

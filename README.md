@@ -35,9 +35,9 @@ Copy the two add-in folders to Fusion's AddIns directory.
 After copying, the directory should look like this:
 
     AddIns/
-      ExportBodies/
-        ExportBodies.py
-        ExportBodies.manifest
+      RapidBatchExporter/
+        RapidBatchExporter.py
+        RapidBatchExporter.manifest
         resources/
           cmd/
             16x16-normal.png
@@ -55,7 +55,7 @@ After copying, the directory should look like this:
 3. Click **Add-Ins** (or press `Shift + S`).
 4. In the **Scripts and Add-Ins** dialog, select the **Add-Ins** tab.
 5. Click the **+** (green plus) button next to *My Add-Ins*.
-6. Browse to the add-in folder (e.g. `ExportBodies`) and select it.
+6. Browse to the add-in folder (e.g. `RapidBatchExporter`) and select it.
    Repeat for the second add-in.
 7. Select each add-in in the list and click **Run**.
 
@@ -63,6 +63,8 @@ After copying, the directory should look like this:
 > tick **Run on Startup** before clicking Run.
 
 ---
+
+**Renamed:** the body and flat pattern exporters are one add-in, **Rapid Batch Exporter** (folder `RapidBatchExporter`, formerly `ExportBodies`). If you used the old version, remove the **ExportBodies** entry in **Scripts and Add-Ins** and add the `RapidBatchExporter` folder instead. Saved export groups and the last output folder carry over.
 
 ### Step 3 - Confirm they are running
 
@@ -132,7 +134,7 @@ The quick way when you just want to export what is selected, without setting up 
 
 ## Using Quick Flat Pattern Exporter
 
-Installed with the ExportBodies add-in (it replaces the separate FlatPatternExporter add-in - stop and unlink the old one in **Scripts and Add-Ins** if it is still listed). It uses the same **Naming Options** (prefix, document name, suffix, milestone) and remembered output folder as the body exporters, and is also listed under **Export** on the Flat Pattern toolbar.
+Part of the Rapid Batch Exporter add-in (it replaces the separate FlatPatternExporter add-in - stop and unlink the old one in **Scripts and Add-Ins** if it is still listed). It uses the same **Naming Options** (prefix, document name, suffix, milestone) and remembered output folder as the body exporters, and is also listed under **Export** on the Flat Pattern toolbar.
 
 1. In the **Utilities** toolbar panel, click **Quick Flat Pattern Exporter**.
 2. **Select** one or more sheet-metal component occurrences from the canvas or browser.
