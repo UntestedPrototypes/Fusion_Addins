@@ -10,8 +10,7 @@ from ..lib.common import app, ui, _handlers, _disable_ghosting
 from ..lib.doc_state import _read_state, _write_state
 from ..lib.export_runner import SEPARATE, COMBINED, MODES, MODE_FORMATS, DEFAULT_FORMAT, _run_export
 from ..lib.naming import _add_naming_inputs, _split_doc_name
-from ..lib.selection import (_add_selection_inputs, _add_body_type_inputs,
-                             _add_canvas_body_picks, _apply_canvas_body_picks)
+from ..lib.selection import _add_selection_inputs, _add_body_type_inputs
 from ..lib.step_post import _add_split_bodies_input
 from ..lib.flat_pattern_export import _add_dxf_inputs, DXF_BOOL_IDS
 
@@ -106,9 +105,6 @@ class CreatedHandler(adsk.core.CommandCreatedEventHandler):
             cmd.inputChanged.add(h_in)
             _handlers.append(h_in)
 
-            # Canvas clicks select bodies, browser clicks select components
-            _add_canvas_body_picks(cmd, _handlers)
-
         except Exception:
             ui.messageBox("Quick Bodies Exporter commandCreated error:\n" + traceback.format_exc())
 
@@ -117,7 +113,6 @@ class _ValidateHandler(adsk.core.ValidateInputsEventHandler):
     def notify(self, args):
         try:
             inputs = args.inputs
-            _apply_canvas_body_picks(inputs)
             solid  = inputs.itemById("chk_solid").value
             surf   = inputs.itemById("chk_surface").value
             sm     = inputs.itemById("chk_sheetmetal").value

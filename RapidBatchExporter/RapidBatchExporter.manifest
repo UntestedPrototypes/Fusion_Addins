@@ -4,7 +4,7 @@
   "id": "RapidBatchExporterAddin",
   "author": "UntestedPrototypes",
   "description": { "": "Rapid batch export of bodies and components (separate or combined per group, STEP/3MF/STL/OBJ/IGES/SAT) and sheet-metal flat patterns (DXF)" },
-  "version": "10.0.1",
+  "version": "10.3.0",
   "runOnStartup": false,
   "supportedOS": "windows"
 }

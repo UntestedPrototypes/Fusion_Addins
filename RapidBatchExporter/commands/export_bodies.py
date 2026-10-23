@@ -12,9 +12,7 @@ from ..lib.doc_state import _entity_ref, _resolve_entity_ref, _read_state, _writ
 from ..lib.export_runner import (SEPARATE, COMBINED, MODES, FORMAT_INFO, MODE_FORMATS,
                                  DEFAULT_FORMAT, _run_export)
 from ..lib.naming import _add_naming_inputs, _split_doc_name
-from ..lib.selection import (_add_selection_inputs, _add_body_type_inputs,
-                             _add_canvas_body_picks, _apply_canvas_body_picks,
-                             _rebuilding)
+from ..lib.selection import _add_selection_inputs, _add_body_type_inputs
 from ..lib.step_post import _add_split_bodies_input
 from ..lib.flat_pattern_export import _add_dxf_inputs, DXF_BOOL_IDS
 
@@ -152,9 +150,6 @@ class CreatedHandler(adsk.core.CommandCreatedEventHandler):
             cmd.inputChanged.add(h_in)
             _handlers.append(h_in)
 
-            # Canvas clicks select bodies, browser clicks select components
-            _add_canvas_body_picks(cmd, _handlers)
-
             h_destroy = _DestroyHandler()
             cmd.destroy.add(h_destroy)
             _handlers.append(h_destroy)
@@ -168,7 +163,6 @@ class _ValidateHandler(adsk.core.ValidateInputsEventHandler):
         try:
             inputs = args.inputs
             _apply_pending_load(inputs)
-            _apply_canvas_body_picks(inputs)
             solid  = inputs.itemById("chk_solid").value
             surf   = inputs.itemById("chk_surface").value
             sm     = inputs.itemById("chk_sheetmetal").value
@@ -312,13 +306,9 @@ def _apply_pending_load(inputs):
     sel_input = inputs.itemById("components")
     if not sel_input:
         return
-    _rebuilding[0] = True     # not canvas picks: keep them as they are
-    try:
-        sel_input.clearSelection()
-        for entity in entities:
-            sel_input.addSelection(entity)
-    finally:
-        _rebuilding[0] = False
+    sel_input.clearSelection()
+    for entity in entities:
+        sel_input.addSelection(entity)
 
 
 def _update_group(inputs):
