@@ -96,13 +96,13 @@ def _gather_group_bodies(entities, want_solid, want_surf, want_sm, visible_only,
     return keep, skipped, comp_names
 
 
-def _save_and_isolate_many(design, keep):
+def _save_and_isolate_many(design, keep, snapshot):
     """Hide every body and occurrence in the design except the bodies in keep
-    (and the occurrence chains that lead to them). Returns a snapshot for
-    _restore_many().
+    (and the occurrence chains that lead to them). Each original state is
+    recorded in snapshot before it is changed, so _restore_many() can undo a
+    failure part-way through.
     """
     root = design.rootComponent
-    snapshot = {"bodies": [], "occs": [], "folders": []}
 
     comps = [design.allComponents.item(c) for c in range(design.allComponents.count)]
     if not adsk.fusion.Component.cast(root):
@@ -134,8 +134,6 @@ def _save_and_isolate_many(design, keep):
             occ.isLightBulbOn = True
             occ = occ.assemblyContext
 
-    return snapshot
-
 
 def _restore_many(snapshot):
     for key in ("folders", "occs"):
@@ -159,8 +157,9 @@ def _export_combined_file(design, keep, filepath, fmt):
     Returns export_mgr.execute()'s result."""
     export_mgr = design.exportManager
     root = design.rootComponent
-    snapshot = _save_and_isolate_many(design, keep)
+    snapshot = {"bodies": [], "occs": [], "folders": []}
     try:
+        _save_and_isolate_many(design, keep, snapshot)
         adsk.doEvents()
         if fmt == "step":
             opts = export_mgr.createSTEPExportOptions(filepath, root)

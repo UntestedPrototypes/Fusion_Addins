@@ -14,6 +14,7 @@ from .folders import _pick_output_folder
 from .naming import _resolve_affixes
 from .step_post import _split_step_bodies
 from .temp_doc_export import _needs_temp_doc, _export_bodies_via_temp_doc
+from .visibility import _snapshot_all, _restore_all
 
 SEPARATE = "Separate"
 COMBINED = "Combined"
@@ -154,6 +155,14 @@ def _run_export(inputs, design, specs):
     cancelled = False
     total = len(jobs)
 
+    # Safety net: whatever happens below (cancel, errors part-way through
+    # isolating), every light bulb is put back as it was before the run
+    visibility = None
+    try:
+        visibility = _snapshot_all(design)
+    except Exception as exc:
+        errors.append("Could not record visibility before exporting: {}".format(exc))
+
     progress = None
     try:
         progress = ui.createProgressDialog()
@@ -234,6 +243,10 @@ def _run_export(inputs, design, specs):
             if progress:
                 progress.progressValue = idx + 1
     finally:
+        if visibility:
+            failed = _restore_all(visibility)
+            if failed:
+                errors.append("Visibility of {} item(s) could not be restored".format(failed))
         if progress:
             try:
                 progress.hide()

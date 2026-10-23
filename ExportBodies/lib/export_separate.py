@@ -24,15 +24,15 @@ def _hide_all_occs_recursive(comp, path, snapshot_occs):
             _hide_all_occs_recursive(occ.component, key, snapshot_occs)
 
 
-def _save_and_isolate(comp, target_body_idx):
-    snapshot = {"bodies": {}, "occs": {}}
+def _save_and_isolate(comp, target_body_idx, snapshot):
+    """Hide everything in comp but one body, recording each original state in
+    snapshot before changing it, so a failure part-way can still be restored."""
     bodies = comp.bRepBodies
     for i in range(bodies.count):
         body = bodies.item(i)
         snapshot["bodies"][i] = body.isLightBulbOn
         body.isLightBulbOn = (i == target_body_idx)
     _hide_all_occs_recursive(comp, (), snapshot["occs"])
-    return snapshot
 
 
 def _restore(comp, snapshot):
@@ -198,8 +198,9 @@ def _plan_separate(entities, want_solid, want_surf, want_sm, visible_only, recur
 
 def _export_separate_body(export_mgr, comp, body_idx, filepath, fmt):
     """Isolate one body and export it. Returns export_mgr.execute()'s result."""
-    snapshot = _save_and_isolate(comp, body_idx)
+    snapshot = {"bodies": {}, "occs": {}}
     try:
+        _save_and_isolate(comp, body_idx, snapshot)
         adsk.doEvents()
         body = comp.bRepBodies.item(body_idx)
         if fmt == "step":

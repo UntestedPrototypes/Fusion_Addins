@@ -12,7 +12,8 @@ from ..lib.export_runner import (SEPARATE, COMBINED, MODES, FORMAT_INFO, MODE_FO
                                  DEFAULT_FORMAT, _run_export)
 from ..lib.naming import _add_naming_inputs, _split_doc_name
 from ..lib.selection import (_add_selection_inputs, _add_body_type_inputs,
-                             _add_canvas_body_picks, _apply_canvas_body_picks)
+                             _add_canvas_body_picks, _apply_canvas_body_picks,
+                             _rebuilding)
 from ..lib.step_post import _add_split_bodies_input
 from ..lib.flat_pattern_export import _add_dxf_inputs, DXF_BOOL_IDS
 
@@ -30,6 +31,11 @@ STATE_STRING_IDS = ("prefix", "suffix")
 # are found by id: group_<field>_<seq>.
 _groups = []
 _group_row_seq = [0]
+
+# Modify: seq of the group being changed, and items waiting to be loaded into
+# the selection (done in validateInputs, where the API allows it)
+_editing = [None]
+_pending_load = []
 
 
 def _row_id(field, seq):
@@ -66,6 +72,8 @@ class CreatedHandler(adsk.core.CommandCreatedEventHandler):
             inputs = cmd.commandInputs
 
             _groups.clear()
+            _editing[0] = None
+            del _pending_load[:]
 
             _add_selection_inputs(inputs)
 
@@ -88,6 +96,12 @@ class CreatedHandler(adsk.core.CommandCreatedEventHandler):
             btn_add = table.commandInputs.addBoolValueInput("btn_add_group", "Add Group", False, "", False)
             btn_add.tooltip = "Store the current selection as a new export group"
             table.addToolbarCommandInput(btn_add)
+            btn_mod = table.commandInputs.addBoolValueInput("btn_modify_group", "Modify", False, "", False)
+            btn_mod.tooltip = "Load the selected group's items into the selection to change them"
+            table.addToolbarCommandInput(btn_mod)
+            btn_upd = table.commandInputs.addBoolValueInput("btn_update_group", "Update", False, "", False)
+            btn_upd.tooltip = "Replace the items of the group being modified with the current selection"
+            table.addToolbarCommandInput(btn_upd)
             btn_rem = table.commandInputs.addBoolValueInput("btn_remove_group", "Remove", False, "", False)
             btn_rem.tooltip = "Remove the selected group"
             table.addToolbarCommandInput(btn_rem)
@@ -95,13 +109,17 @@ class CreatedHandler(adsk.core.CommandCreatedEventHandler):
             btn_clr.tooltip = "Remove all groups"
             table.addToolbarCommandInput(btn_clr)
 
+            edit_status = gc.addTextBoxCommandInput("edit_status", "", "", 1, True)
+            edit_status.isVisible = False
+
             gc.addTextBoxCommandInput(
                 "groups_hint", "",
                 "Select components and/or bodies, enter a name and click <b>Add Group</b>. "
-                "Only ticked groups in the table are exported (first column). Per group: "
+                "To change a group, select its row, click <b>Modify</b>, adjust the selection "
+                "and click <b>Update</b>. Only ticked groups are exported (first column). "
                 "<b>Separate</b> = one file per body (tick Subfolder for a folder named after "
                 "the group), <b>Combined</b> = one file.",
-                3, True
+                4, True
             )
 
             _add_body_type_inputs(inputs)
@@ -146,6 +164,7 @@ class _ValidateHandler(adsk.core.ValidateInputsEventHandler):
     def notify(self, args):
         try:
             inputs = args.inputs
+            _apply_pending_load(inputs)
             _apply_canvas_body_picks(inputs)
             solid  = inputs.itemById("chk_solid").value
             surf   = inputs.itemById("chk_surface").value
@@ -182,10 +201,16 @@ class _InputChangedHandler(adsk.core.InputChangedEventHandler):
                     sub.isEnabled = (mode == SEPARATE)
             elif input_id == "btn_add_group":
                 _add_group_from_selection(inputs)
+            elif input_id == "btn_modify_group":
+                _start_modify(inputs)
+            elif input_id == "btn_update_group":
+                _update_group(inputs)
             elif input_id == "btn_remove_group":
                 table = inputs.itemById("tbl_groups")
                 row = table.selectedRow
                 if 0 <= row < len(_groups):
+                    if _groups[row]["seq"] == _editing[0]:
+                        _set_editing(inputs, None)
                     table.deleteRow(row)
                     _groups.pop(row)
             elif input_id == "btn_clear_groups":
@@ -193,6 +218,7 @@ class _InputChangedHandler(adsk.core.InputChangedEventHandler):
                 for row in range(len(_groups) - 1, -1, -1):
                     table.deleteRow(row)
                 _groups.clear()
+                _set_editing(inputs, None)
 
             _update_dxf_visibility(inputs)
         except Exception:
@@ -212,6 +238,8 @@ def _update_dxf_visibility(inputs):
 class _DestroyHandler(adsk.core.CommandEventHandler):
     def notify(self, args):
         _groups.clear()
+        _editing[0] = None
+        del _pending_load[:]
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +261,80 @@ def _add_group_from_selection(inputs):
 
     sel_input.clearSelection()
     name_input.value = "Group {}".format(len(_groups) + 1)
+
+
+def _group_by_seq(seq):
+    return next((g for g in _groups if g["seq"] == seq), None)
+
+
+def _group_name(inputs, g):
+    name_box = inputs.itemById(_row_id("name", g["seq"]))
+    return name_box.value.strip() if name_box else ""
+
+
+def _set_editing(inputs, seq):
+    """Remember which group is being modified and show it above the hint."""
+    _editing[0] = seq
+    status = inputs.itemById("edit_status")
+    if not status:
+        return
+    g = _group_by_seq(seq) if seq is not None else None
+    if g:
+        status.formattedText = ("Modifying <b>{}</b> - change the selection, then click "
+                                "<b>Update</b>.".format(_group_name(inputs, g) or "group"))
+        status.isVisible = True
+    else:
+        status.isVisible = False
+
+
+def _start_modify(inputs):
+    """Modify: load the selected row's items into the selection box."""
+    table = inputs.itemById("tbl_groups")
+    row = table.selectedRow
+    if not (0 <= row < len(_groups)):
+        ui.messageBox("Select a group in the table first, then click Modify.")
+        return
+    g = _groups[row]
+    del _pending_load[:]
+    _pending_load.append(list(g["entities"]))
+    _set_editing(inputs, g["seq"])
+
+
+def _apply_pending_load(inputs):
+    """Call from validateInputs: put a Modify'd group's items into the selection."""
+    if not _pending_load:
+        return
+    entities = _pending_load.pop()
+    del _pending_load[:]
+    sel_input = inputs.itemById("components")
+    if not sel_input:
+        return
+    _rebuilding[0] = True     # not canvas picks: keep them as they are
+    try:
+        sel_input.clearSelection()
+        for entity in entities:
+            sel_input.addSelection(entity)
+    finally:
+        _rebuilding[0] = False
+
+
+def _update_group(inputs):
+    """Update: replace the modified group's items with the current selection."""
+    g = _group_by_seq(_editing[0]) if _editing[0] is not None else None
+    if not g:
+        ui.messageBox("Select a group, click Modify, change the selection, then click Update.")
+        return
+    sel_input = inputs.itemById("components")
+    if sel_input.selectionCount == 0:
+        ui.messageBox("The selection is empty - select the group's components and/or bodies "
+                      "before clicking Update (or use Remove to delete the group).")
+        return
+    g["entities"] = [sel_input.selection(i).entity for i in range(sel_input.selectionCount)]
+    count_box = inputs.itemById(_row_id("count", g["seq"]))
+    if count_box:
+        count_box.text = _describe_items(g["entities"])
+    sel_input.clearSelection()
+    _set_editing(inputs, None)
 
 
 def _describe_items(entities, missing=0):
