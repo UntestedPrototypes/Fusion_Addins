@@ -75,25 +75,37 @@ def _base_name(comp, native_body, inc_comp, prefix, suffix):
     return base_name
 
 
+def _node_key(node):
+    """One key per instance: the occurrence's full path, or "" for the root."""
+    occ = adsk.fusion.Occurrence.cast(node)
+    return occ.fullPathName if occ else ""
+
+
 # ---------------------------------------------------------------------------
 # Collect (comp, body_index) pairs - recurse only when recurse=True
 # ---------------------------------------------------------------------------
 def _collect_bodies(node, want_solid, want_surf, want_sm, visible_only, inc_comp,
-                    prefix, suffix, plan, skipped,
-                    seen_comp_ids, seen_body_tokens, recurse):
+                    prefix, suffix, plan, pending_skips,
+                    seen_nodes, seen_body_tokens, recurse):
+    """Visibility is checked per instance: a body is exported (once) as soon as
+    any visible instance of it is found, so a hidden first instance of a
+    component no longer hides its other, visible instances. Skip reasons wait
+    in pending_skips (token -> text) until no instance of that body is used."""
     comp = node.component if adsk.fusion.Occurrence.cast(node) else node
     if not comp:
         return
-    if comp.id in seen_comp_ids:
+    key = _node_key(node)
+    if key in seen_nodes:
         return
-    seen_comp_ids.add(comp.id)
+    seen_nodes.add(key)
 
     bodies = node.bRepBodies
     for i in range(bodies.count):
         proxy_body = bodies.item(i)
         native_body = proxy_body.nativeObject if proxy_body.assemblyContext else proxy_body
+        token = native_body.entityToken
 
-        if native_body.entityToken in seen_body_tokens:
+        if token in seen_body_tokens:
             continue
 
         if native_body.isSheetMetal:
@@ -107,15 +119,16 @@ def _collect_bodies(node, want_solid, want_surf, want_sm, visible_only, inc_comp
             kind = "surface"
 
         if not keep:
-            skipped.append("{}/{} ({})".format(comp.name, native_body.name, kind))
+            pending_skips[token] = "{}/{} ({})".format(comp.name, native_body.name, kind)
             continue
 
-        # Check proxy body visibility
+        # Check this instance's visibility; another instance may still be visible
         if visible_only and not proxy_body.isVisible:
-            skipped.append("{}/{} (hidden)".format(comp.name, native_body.name))
+            pending_skips.setdefault(token, "{}/{} (hidden)".format(comp.name, native_body.name))
             continue
 
-        seen_body_tokens.add(native_body.entityToken)
+        seen_body_tokens.add(token)
+        pending_skips.pop(token, None)
 
         # The index in comp.bRepBodies is what _save_and_isolate needs
         native_idx = _native_index(comp, native_body)
@@ -129,8 +142,8 @@ def _collect_bodies(node, want_solid, want_surf, want_sm, visible_only, inc_comp
             sub_occ = occs.item(j)
             if sub_occ:
                 _collect_bodies(sub_occ, want_solid, want_surf, want_sm, visible_only, inc_comp,
-                                prefix, suffix, plan, skipped,
-                                seen_comp_ids, seen_body_tokens, recurse)
+                                prefix, suffix, plan, pending_skips,
+                                seen_nodes, seen_body_tokens, recurse)
 
 
 def _plan_separate(entities, want_solid, want_surf, want_sm, visible_only, recurse,
@@ -140,8 +153,9 @@ def _plan_separate(entities, want_solid, want_surf, want_sm, visible_only, recur
     """
     plan             = []
     skipped          = []
-    seen_sel_ids     = set()
-    seen_comp_ids    = set()
+    pending_skips    = {}
+    seen_sel_keys    = set()
+    seen_nodes       = set()
     seen_body_tokens = set()
     top_components   = []
 
@@ -166,17 +180,19 @@ def _plan_separate(entities, want_solid, want_surf, want_sm, visible_only, recur
                 occ  = adsk.fusion.Occurrence.cast(entity)
                 node = occ if occ else _as_component(entity)
                 comp = occ.component if occ else node
-                if comp and comp.id not in seen_sel_ids:
-                    seen_sel_ids.add(comp.id)
+                # Every selected instance counts, even of the same component
+                if comp and _node_key(node) not in seen_sel_keys:
+                    seen_sel_keys.add(_node_key(node))
                     top_components.append(node)
         except Exception as exc:
             skipped.append("(invalid selection: {})".format(exc))
 
     for node in top_components:
         _collect_bodies(node, want_solid, want_surf, want_sm, visible_only, inc_comp,
-                        prefix, suffix, plan, skipped,
-                        seen_comp_ids, seen_body_tokens, recurse)
+                        prefix, suffix, plan, pending_skips,
+                        seen_nodes, seen_body_tokens, recurse)
 
+    skipped.extend(pending_skips.values())
     return plan, skipped
 
 

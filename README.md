@@ -103,7 +103,7 @@ keeps the assembly structure and positions.
 
 Bodies you create while editing a **flat pattern** can be exported too: run the exporter from **Export** on the Flat Pattern toolbar and select them there. Fusion cannot write STEP, IGES or SAT directly from a flat pattern, so for those formats the bodies are copied into a temporary document that briefly opens as a tab and is closed again without saving.
 
-Separate groups export each body once, even if its component is used several times. Combined groups keep every instance in its place. Everything not being exported is temporarily hidden during the export, then visibility is restored.
+Separate groups export each body once, even if its component is used several times; with **Export only visible bodies** a body counts as visible when **any** selected instance of it is visible. Visibility is always that of the configuration that is active when you click **OK**. Combined groups keep every instance in its place. Everything not being exported is temporarily hidden during the export, then visibility is restored.
 
 **Name every body in STEP (slicer friendly)** (on by default, STEP only): slicers such as Bambu Studio name parts after the STEP *component*, so the bodies of a multi-body component show up as "Component-SOLID-1", "-SOLID-2". With this option each body becomes its own part named after the body ("Component_Body" inside sub-components). Geometry and positions are unchanged.
 
