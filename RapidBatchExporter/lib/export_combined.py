@@ -4,7 +4,7 @@ import adsk.core
 import adsk.fusion
 
 from .common import _as_component, _child_occurrences
-from .temp_doc_export import _world_matrix, _world_copy, _local_copy
+from .temp_doc_export import _world_matrix, _world_copy, _local_copy, _body_style
 
 
 def _collect_combined(node, want_solid, want_surf, want_sm, visible_only, recurse,
@@ -131,16 +131,21 @@ def _combined_items(keep):
                 copy, verified = _world_copy(body)
                 if not verified:
                     unverified.append(body.name)
-                copies.append((body.name, copy))
-            items.append((comp.name, copies, []))
+                copies.append((body.name, copy) + _body_style(body))
+            items.append((comp.name, copies, [], comp.material))
             continue
         # Instances with the same bodies share one component, placed again.
         # The name is part of the key: configuration variants of a component
         # report the same id but have different geometry.
-        key = (comp.id, comp.name, tuple(sorted(b.nativeObject.entityToken for b in bodies)))
+        # Appearances too: an instance can override them.
+        styles = [_body_style(b) for b in bodies]
+        key = (comp.id, comp.name,
+               tuple(sorted(b.nativeObject.entityToken for b in bodies)),
+               tuple(sorted((a.id if a else "", m.id if m else "") for a, m in styles)))
         item = shared.get(key)
         if item is None:
-            item = (comp.name, [(b.name, _local_copy(b)) for b in bodies], [])
+            item = (comp.name, [(b.name, _local_copy(b)) + st for b, st in zip(bodies, styles)],
+                    [], comp.material)
             shared[key] = item
             items.append(item)
         item[2].append(matrix)
@@ -149,5 +154,6 @@ def _combined_items(keep):
         copy, verified = _world_copy(body)
         if not verified:
             unverified.append(body.name)
-        items.append((None, [(body.name, copy)], []))
+        items.append((None, [(body.name, copy) + _body_style(body)], [],
+                      body.parentComponent.material))
     return items, unverified

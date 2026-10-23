@@ -13,7 +13,7 @@ from .flat_pattern_export import _sheet_metal_components, _export_flat_pattern, 
 from .folders import _pick_output_folder
 from .naming import _resolve_affixes
 from .step_post import _split_step_bodies
-from .temp_doc_export import TEMP_DOC_FORMATS, _TempDocSession, _local_copy
+from .temp_doc_export import TEMP_DOC_FORMATS, _TempDocSession, _local_copy, _body_style
 
 SEPARATE = "Separate"
 COMBINED = "Combined"
@@ -241,6 +241,8 @@ def _run_export(inputs, design, specs):
             if progress:
                 progress.progressValue = idx + 1
     finally:
+        for problem in sorted(set(session.style_errors))[:10]:
+            errors.append("Appearance/material not copied - {}".format(problem))
         try:
             session.close()
         except Exception as exc:
@@ -293,7 +295,8 @@ def _prepare_temp_items(jobs, errors):
                 job["root_name"] = job["base"]
             else:
                 body = job["comp"].bRepBodies.item(job["body_idx"])
-                job["items"] = [(None, [(body.name, _local_copy(body))], [])]
+                job["items"] = [(None, [(body.name, _local_copy(body)) + _body_style(body)], [],
+                                 job["comp"].material)]
                 job["root_name"] = job["comp"].name
         except Exception as exc:
             job["items"] = []
