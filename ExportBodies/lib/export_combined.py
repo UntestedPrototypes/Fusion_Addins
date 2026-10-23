@@ -1,9 +1,10 @@
-"""Combined output: all bodies of a group isolated together and exported
-as one file, keeping every component instance in its place."""
+"""Combined output: all bodies of a group collected and exported as one
+file (through the temporary document), every component instance in its place."""
 import adsk.core
 import adsk.fusion
 
 from .common import _as_component, _child_occurrences
+from .temp_doc_export import _world_matrix, _world_copy, _local_copy
 
 
 def _collect_combined(node, want_solid, want_surf, want_sm, visible_only, recurse,
@@ -96,79 +97,57 @@ def _gather_group_bodies(entities, want_solid, want_surf, want_sm, visible_only,
     return keep, skipped, comp_names
 
 
-def _save_and_isolate_many(design, keep, snapshot):
-    """Hide every body and occurrence in the design except the bodies in keep
-    (and the occurrence chains that lead to them). Each original state is
-    recorded in snapshot before it is changed, so _restore_many() can undo a
-    failure part-way through.
-    """
-    root = design.rootComponent
+def _combined_items(keep):
+    """Contents of a combined file for the temporary document: one component
+    per source component, placed at every instance like in the design, with
+    the instance's bodies in the component's own coordinates. Bodies of the
+    top level go into the root. Returns (items, unverified body names) - see
+    _TempDocSession.export()."""
+    instances = {}      # occurrence path -> [occurrence, native component, [bodies]]
+    order = []
+    root_bodies = []
+    for body in keep:
+        ctx = body.assemblyContext
+        if not ctx:
+            root_bodies.append(body)
+            continue
+        native = body.nativeObject
+        entry = instances.get(ctx.fullPathName)
+        if entry is None:
+            entry = instances[ctx.fullPathName] = [body, native.parentComponent, []]
+            order.append(ctx.fullPathName)
+        entry[2].append(body)
 
-    comps = [design.allComponents.item(c) for c in range(design.allComponents.count)]
-    if not adsk.fusion.Component.cast(root):
-        comps.append(root)       # flat pattern: its bodies live on the FlatPattern
-    for comp in comps:
-        if hasattr(comp, "isBodiesFolderLightBulbOn"):
-            snapshot["folders"].append((comp, comp.isBodiesFolderLightBulbOn))
-        bodies = comp.bRepBodies
-        for i in range(bodies.count):
-            body = bodies.item(i)
-            snapshot["bodies"].append((body, body.isLightBulbOn))
-            body.isLightBulbOn = False
+    items = []
+    unverified = []
+    shared = {}         # (component id, body tokens) -> item using that component
+    for path in order:
+        first_body, comp, bodies = instances[path]
+        matrix = _world_matrix(first_body)
+        if matrix is None:
+            # No verified placement: copy this instance's bodies in place instead
+            copies = []
+            for body in bodies:
+                copy, verified = _world_copy(body)
+                if not verified:
+                    unverified.append(body.name)
+                copies.append((body.name, copy))
+            items.append((comp.name, copies, []))
+            continue
+        # Instances with the same bodies share one component, placed again.
+        # The name is part of the key: configuration variants of a component
+        # report the same id but have different geometry.
+        key = (comp.id, comp.name, tuple(sorted(b.nativeObject.entityToken for b in bodies)))
+        item = shared.get(key)
+        if item is None:
+            item = (comp.name, [(b.name, _local_copy(b)) for b in bodies], [])
+            shared[key] = item
+            items.append(item)
+        item[2].append(matrix)
 
-    all_occs = getattr(root, "allOccurrences", None)
-    for i in range(all_occs.count if all_occs else 0):
-        occ = all_occs.item(i)
-        snapshot["occs"].append((occ, occ.isLightBulbOn))
-        occ.isLightBulbOn = False
-
-    for proxy_body in keep:
-        native_body = proxy_body.nativeObject if proxy_body.assemblyContext else proxy_body
-        native_body.isLightBulbOn = True
-        try:
-            native_body.parentComponent.isBodiesFolderLightBulbOn = True
-        except Exception:
-            pass
-        occ = proxy_body.assemblyContext
-        while occ:
-            occ.isLightBulbOn = True
-            occ = occ.assemblyContext
-
-
-def _restore_many(snapshot):
-    for key in ("folders", "occs"):
-        for obj, state in snapshot[key]:
-            try:
-                if key == "folders":
-                    obj.isBodiesFolderLightBulbOn = state
-                else:
-                    obj.isLightBulbOn = state
-            except Exception:
-                pass
-    for body, state in snapshot["bodies"]:
-        try:
-            body.isLightBulbOn = state
-        except Exception:
-            pass
-
-
-def _export_combined_file(design, keep, filepath, fmt):
-    """Isolate the bodies in keep and export the root component to one file.
-    Returns export_mgr.execute()'s result."""
-    export_mgr = design.exportManager
-    root = design.rootComponent
-    snapshot = {"bodies": [], "occs": [], "folders": []}
-    try:
-        _save_and_isolate_many(design, keep, snapshot)
-        adsk.doEvents()
-        if fmt == "step":
-            opts = export_mgr.createSTEPExportOptions(filepath, root)
-        elif fmt == "iges":
-            opts = export_mgr.createIGESExportOptions(filepath, root)
-        elif fmt == "sat":
-            opts = export_mgr.createSATExportOptions(filepath, root)
-        else:
-            raise ValueError("format {} cannot hold a combined export".format(fmt))
-        return export_mgr.execute(opts)
-    finally:
-        _restore_many(snapshot)
+    for body in root_bodies:
+        copy, verified = _world_copy(body)
+        if not verified:
+            unverified.append(body.name)
+        items.append((None, [(body.name, copy)], []))
+    return items, unverified

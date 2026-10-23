@@ -101,9 +101,11 @@ keeps the assembly structure and positions.
 7. Click **OK** and choose the destination folder. It opens at the last folder you exported to, or your Documents folder the first time.
 8. If any files already exist you are asked once whether to overwrite them all. A summary lists the exported files per group and anything skipped.
 
-Bodies you create while editing a **flat pattern** can be exported too: run the exporter from **Export** on the Flat Pattern toolbar and select them there. Fusion cannot write STEP, IGES or SAT directly from a flat pattern, so for those formats the bodies are copied into a temporary document that briefly opens as a tab and is closed again without saving.
+Bodies you create while editing a **flat pattern** can be exported too: run the exporter from **Export** on the Flat Pattern toolbar and select them there.
 
-Separate groups export each body once, even if its component is used several times; with **Export only visible bodies** a body counts as visible when **any** selected instance of it is visible. Visibility is always that of the configuration that is active when you click **OK**. Combined groups keep every instance in its place. Everything not being exported is temporarily hidden during the export, then visibility is restored - also when you cancel the export or an error stops it part-way.
+Separate groups export each body once, even if its component is used several times; with **Export only visible bodies** a body counts as visible when **any** selected instance of it is visible. Visibility is always that of the configuration that is active when you click **OK**. Combined groups keep every instance in its place: each source component becomes one component in the file, placed once per instance (configuration variants stay separate). The placement of every body is checked against the design before it is written.
+
+**How STEP, IGES and SAT are exported:** Fusion's translator processes the whole component or design it is given, hidden parts included, which made exporting from large assemblies slow. These formats are therefore exported through a temporary document that contains only the bodies of the current file: it opens once as a tab, is reused for every file of the export, and is closed again without saving. Nothing in your design is hidden or changed. STL, 3MF, OBJ and DXF are exported directly.
 
 **Name every body in STEP (slicer friendly)** (on by default, STEP only): slicers such as Bambu Studio name parts after the STEP *component*, so the bodies of a multi-body component show up as "Component-SOLID-1", "-SOLID-2". With this option each body becomes its own part named after the body ("Component_Body" inside sub-components). Geometry and positions are unchanged.
 

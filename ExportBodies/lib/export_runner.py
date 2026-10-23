@@ -7,14 +7,13 @@ import adsk.core
 
 from .common import ui, _do_events, _safe_name
 from .doc_state import _read_state, _write_state
-from .export_combined import _gather_group_bodies, _export_combined_file
+from .export_combined import _gather_group_bodies, _combined_items
 from .export_separate import _plan_separate, _export_separate_body
 from .flat_pattern_export import _sheet_metal_components, _export_flat_pattern, _dxf_options
 from .folders import _pick_output_folder
 from .naming import _resolve_affixes
 from .step_post import _split_step_bodies
-from .temp_doc_export import _needs_temp_doc, _export_bodies_via_temp_doc
-from .visibility import _snapshot_all, _restore_all
+from .temp_doc_export import TEMP_DOC_FORMATS, _TempDocSession, _local_copy
 
 SEPARATE = "Separate"
 COMBINED = "Combined"
@@ -155,13 +154,14 @@ def _run_export(inputs, design, specs):
     cancelled = False
     total = len(jobs)
 
-    # Safety net: whatever happens below (cancel, errors part-way through
-    # isolating), every light bulb is put back as it was before the run
-    visibility = None
-    try:
-        visibility = _snapshot_all(design)
-    except Exception as exc:
-        errors.append("Could not record visibility before exporting: {}".format(exc))
+    # STEP/IGES/SAT go through one temporary document holding only the bodies
+    # of the current file - much faster than having Fusion translate the whole
+    # component or design. Those files run last, so the design stays the
+    # active document while the others export and while bodies are copied.
+    for job in jobs:
+        job["temp"] = job["kind"] != "flat" and job["fmt"] in TEMP_DOC_FORMATS
+    jobs.sort(key=lambda j: j["temp"])      # stable: keeps the order otherwise
+    session = _TempDocSession()
 
     progress = None
     try:
@@ -205,23 +205,21 @@ def _run_export(inputs, design, specs):
                     continue
 
             try:
-                via_temp_doc = _needs_temp_doc(design, job["fmt"])
-                if job["kind"] == COMBINED:
-                    if via_temp_doc:
-                        ok = _export_bodies_via_temp_doc(job["keep"], path, job["fmt"], job["base"])
-                    else:
-                        ok = _export_combined_file(design, job["keep"], path, job["fmt"])
+                if job["temp"]:
+                    if session.doc is None:
+                        # Copy the bodies of every remaining file now, while
+                        # the design is still the active document
+                        _prepare_temp_items(jobs, errors)
+                    if not job.get("items"):
+                        errors.append("{}: no bodies could be copied".format(rel))
+                        continue
+                    ok = session.export(job["items"], path, job["fmt"], job["root_name"])
                 elif job["kind"] == "flat":
                     ok = _export_flat_pattern(design.exportManager, job["comp"], path, *dxf_opts)
-                elif via_temp_doc:
-                    body = job["comp"].bRepBodies.item(job["body_idx"])
-                    ok = _export_bodies_via_temp_doc([body], path, job["fmt"], job["body_name"])
                 else:
                     ok = _export_separate_body(design.exportManager, job["comp"],
                                                job["body_idx"], path, job["fmt"])
                 if ok and not os.path.exists(path):
-                    # Seen when exporting from inside a flat pattern: execute()
-                    # returns True but nothing is written
                     errors.append("{}: Fusion reported success but wrote no file".format(rel))
                 elif ok:
                     exported.setdefault(job["group"], []).append(rel)
@@ -243,10 +241,10 @@ def _run_export(inputs, design, specs):
             if progress:
                 progress.progressValue = idx + 1
     finally:
-        if visibility:
-            failed = _restore_all(visibility)
-            if failed:
-                errors.append("Visibility of {} item(s) could not be restored".format(failed))
+        try:
+            session.close()
+        except Exception as exc:
+            errors.append("Could not close the temporary export document: {}".format(exc))
         if progress:
             try:
                 progress.hide()
@@ -276,3 +274,27 @@ def _run_export(inputs, design, specs):
         parts.append("Errors:\n" + "\n".join("  " + e for e in errors))
     ui.messageBox("\n\n".join(parts) or "Nothing exported.")
 
+
+def _prepare_temp_items(jobs, errors):
+    """Copies of the bodies for every file that goes through the temporary
+    document: Separate in the body's own component coordinates (as Fusion
+    exported a component before), Combined placed in the design with one
+    component per source component."""
+    for job in jobs:
+        if not job.get("temp") or "items" in job:
+            continue
+        try:
+            if job["kind"] == COMBINED:
+                items, unverified = _combined_items(job["keep"])
+                if unverified:
+                    errors.append("[{}] position could not be verified for: {}".format(
+                        job["group"], ", ".join(sorted(set(unverified)))))
+                job["items"] = items
+                job["root_name"] = job["base"]
+            else:
+                body = job["comp"].bRepBodies.item(job["body_idx"])
+                job["items"] = [(None, [(body.name, _local_copy(body))], [])]
+                job["root_name"] = job["comp"].name
+        except Exception as exc:
+            job["items"] = []
+            errors.append("[{}] could not copy bodies: {}".format(job["group"], exc))

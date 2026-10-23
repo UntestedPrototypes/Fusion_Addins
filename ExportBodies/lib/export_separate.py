@@ -1,61 +1,9 @@
-"""Separate output: one file per body, each body isolated and exported on
-its own. Repeated instances of a component are exported once."""
+"""Separate output: one file per body. Repeated instances of a component are
+exported once."""
 import adsk.core
 import adsk.fusion
 
 from .common import _safe_name, _as_component, _child_occurrences
-
-
-# ---------------------------------------------------------------------------
-# Visibility helpers
-# ---------------------------------------------------------------------------
-def _hide_all_occs_recursive(comp, path, snapshot_occs):
-    """Recursively hide all occurrences at every depth.
-    Uses a tuple path (comp.name, index, ...) as a stable key instead of
-    entityToken, which is only valid for root-level proxies.
-    """
-    occs = getattr(comp, "occurrences", None)   # none in a flat pattern
-    for i in range(occs.count if occs else 0):
-        occ = occs.item(i)
-        key = path + (i,)
-        snapshot_occs[key] = occ.isLightBulbOn
-        occ.isLightBulbOn = False
-        if occ.component:
-            _hide_all_occs_recursive(occ.component, key, snapshot_occs)
-
-
-def _save_and_isolate(comp, target_body_idx, snapshot):
-    """Hide everything in comp but one body, recording each original state in
-    snapshot before changing it, so a failure part-way can still be restored."""
-    bodies = comp.bRepBodies
-    for i in range(bodies.count):
-        body = bodies.item(i)
-        snapshot["bodies"][i] = body.isLightBulbOn
-        body.isLightBulbOn = (i == target_body_idx)
-    _hide_all_occs_recursive(comp, (), snapshot["occs"])
-
-
-def _restore(comp, snapshot):
-    bodies = comp.bRepBodies
-    for i, state in snapshot["bodies"].items():
-        try:
-            bodies.item(i).isLightBulbOn = state
-        except Exception:
-            pass
-    # Restore all occurrences at every depth using the same path-tuple keys
-    def _restore_occs_recursive(c, path):
-        occs = getattr(c, "occurrences", None)
-        for i in range(occs.count if occs else 0):
-            occ = occs.item(i)
-            key = path + (i,)
-            if key in snapshot["occs"]:
-                try:
-                    occ.isLightBulbOn = snapshot["occs"][key]
-                except Exception:
-                    pass
-            if occ.component:
-                _restore_occs_recursive(occ.component, key)
-    _restore_occs_recursive(comp, ())
 
 
 def _native_index(comp, native_body):
@@ -130,7 +78,7 @@ def _collect_bodies(node, want_solid, want_surf, want_sm, visible_only, inc_comp
         seen_body_tokens.add(token)
         pending_skips.pop(token, None)
 
-        # The index in comp.bRepBodies is what _save_and_isolate needs
+        # Jobs refer to the body by its index in comp.bRepBodies
         native_idx = _native_index(comp, native_body)
         if native_idx != -1:
             plan.append((comp, native_idx, native_body.name,
@@ -197,26 +145,16 @@ def _plan_separate(entities, want_solid, want_surf, want_sm, visible_only, recur
 
 
 def _export_separate_body(export_mgr, comp, body_idx, filepath, fmt):
-    """Isolate one body and export it. Returns export_mgr.execute()'s result."""
-    snapshot = {"bodies": {}, "occs": {}}
-    try:
-        _save_and_isolate(comp, body_idx, snapshot)
-        adsk.doEvents()
-        body = comp.bRepBodies.item(body_idx)
-        if fmt == "step":
-            opts = export_mgr.createSTEPExportOptions(filepath, comp)
-        elif fmt == "3mf":
-            opts = export_mgr.createC3MFExportOptions(body, filepath)
-        elif fmt == "stl":
-            opts = export_mgr.createSTLExportOptions(body, filepath)
-        elif fmt == "obj":
-            opts = export_mgr.createOBJExportOptions(body, filepath)
-        elif fmt == "iges":
-            opts = export_mgr.createIGESExportOptions(filepath, comp)
-        elif fmt == "sat":
-            opts = export_mgr.createSATExportOptions(filepath, comp)
-        else:
-            raise ValueError("unknown format " + fmt)
-        return export_mgr.execute(opts)
-    finally:
-        _restore(comp, snapshot)
+    """Export one body to a mesh file (3MF/STL/OBJ). These exports take the
+    body itself, so nothing needs to be hidden. STEP/IGES/SAT go through the
+    temporary document instead. Returns export_mgr.execute()'s result."""
+    body = comp.bRepBodies.item(body_idx)
+    if fmt == "3mf":
+        opts = export_mgr.createC3MFExportOptions(body, filepath)
+    elif fmt == "stl":
+        opts = export_mgr.createSTLExportOptions(body, filepath)
+    elif fmt == "obj":
+        opts = export_mgr.createOBJExportOptions(body, filepath)
+    else:
+        raise ValueError("format {} is exported through the temporary document".format(fmt))
+    return export_mgr.execute(opts)
